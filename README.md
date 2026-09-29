@@ -1,6 +1,6 @@
 # Energy Data Platform
 
-A data platform for the European electricity market. A Go service ingests ENTSO-E (prices, load, generation) and KNMI weather into Postgres. Debezium on Kafka Connect streams the changes into Kafka, and a Go sink loads them into an analytical store. The focus is on platform engineering: delivery guarantees, observability, and failure handling.
+A data platform for the European electricity market. A Go service ingests ENTSO-E (prices, load, generation) and Open-Meteo weather into Postgres. Debezium on Kafka Connect streams the changes into Kafka, and a Go sink loads them into an analytical store. The focus is on platform engineering: delivery guarantees, observability, and failure handling.
 
 > Work in progress. Design decisions are in [`docs/adr/`](docs/adr/).
 

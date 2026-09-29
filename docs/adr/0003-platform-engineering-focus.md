@@ -1,6 +1,6 @@
 # 0003: Platform engineering focus
 
-- Status: accepted
+- Status: accepted; the KNMI weather source is superseded by [0009](0009-weather-source-open-meteo.md)
 - Date: 2026-09-29
 - Supersedes: [0001](0001-scope-and-dataset.md), [0002](0002-local-first-development.md)
 

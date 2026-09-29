@@ -1,6 +1,6 @@
 # 0001: Scope and dataset
 
-- Status: superseded by [0003](0003-platform-engineering-focus.md) (the dataset choice still stands)
+- Status: superseded by [0003](0003-platform-engineering-focus.md) (the ENTSO-E dataset choice still stands); the weather source is superseded by [0009](0009-weather-source-open-meteo.md)
 - Date: 2026-09-29
 
 ## Context

@@ -1,4 +1,4 @@
-// Command ingest pulls ENTSO-E and KNMI data into Postgres.
+// Command ingest pulls ENTSO-E and Open-Meteo data into Postgres.
 // For now it only runs the HTTP endpoints (health, readiness, metrics) and shuts down gracefully.
 package main
 

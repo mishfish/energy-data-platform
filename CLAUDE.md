@@ -1,6 +1,6 @@
 # Energy Data Platform
 
-A data platform focused on platform engineering: reliable ingestion, CDC, delivery guarantees, observability, failure handling and IaC. Data modeling is not the focus. Domain: European electricity market data from the ENTSO-E Transparency Platform (day-ahead prices, actual load, generation per production type, and forecasts), joined with KNMI weather. ENTSO-E revises published values after the fact, so the source produces real UPDATEs and not only appends; this is the main reason CDC is meaningful here.
+A data platform focused on platform engineering: reliable ingestion, CDC, delivery guarantees, observability, failure handling and IaC. Data modeling is not the focus. Domain: European electricity market data from the ENTSO-E Transparency Platform (day-ahead prices, actual load, generation per production type, and forecasts), joined with Open-Meteo weather (ADR 0009). ENTSO-E revises published values after the fact, so the source produces real UPDATEs and not only appends; this is the main reason CDC is meaningful here.
 
 > Status: repositioned on 2026-09-29 (platform focus, ENTSO-E domain), draft. Decisions still open are listed under **Open decisions**; when one is made, write an ADR and update this file. M0 scaffolding is in place: Go module, Makefile, compose stack, CI and observability provisioning (ADR 0007), plus a `cmd/ingest` skeleton (health/readiness/metrics endpoints, graceful shutdown, no ingestion logic yet) that runs in compose from the shared root `Dockerfile` (ADR 0008). `make test` and `make lint` pass.
 
@@ -17,7 +17,7 @@ A data platform focused on platform engineering: reliable ingestion, CDC, delive
 ## Architecture (target)
 ```
 ENTSO-E API (prices, load, gen) ──┐
-KNMI API (weather) ───────────────┴─► Go ingestion service ─► Postgres (source of truth, logical replication)
+Open-Meteo API (weather) ─────────┴─► Go ingestion service ─► Postgres (source of truth, logical replication)
                                                                   │  CDC: Debezium on Kafka Connect
                                                                   ▼
                                                            Kafka (KRaft)
@@ -87,3 +87,5 @@ Each needs an ADR once decided.
 6. Cloud and runtime: GCP vs AWS, and a VM with compose vs Kubernetes.
 7. Serving the model: Go vs FastAPI.
 8. Batch orchestration (backfill, dbt runs): scheduled Go jobs / k8s CronJob vs Airflow.
+9. ~~Weather source~~: decided, Open-Meteo (ADR 0009).
+10. Weather-to-market mapping: which bidding zones to ingest, and representative coordinates per zone (single point vs weighted average of several).
