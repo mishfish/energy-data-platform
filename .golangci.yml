@@ -1,5 +1,9 @@
 version: "2"
 
+run:
+  # Lint integration tests too; they are behind a build tag.
+  build-tags: [integration]
+
 linters:
   default: standard
   enable:
