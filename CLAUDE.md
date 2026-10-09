@@ -2,7 +2,7 @@
 
 A data platform focused on platform engineering: reliable ingestion, CDC, delivery guarantees, observability, failure handling and IaC. Data modeling is not the focus. Domain: European electricity market data from the ENTSO-E Transparency Platform (day-ahead prices, actual load, generation per production type, and forecasts), joined with Open-Meteo weather (ADR 0009). ENTSO-E revises published values after the fact, so the source produces real UPDATEs and not only appends; this is the main reason CDC is meaningful here.
 
-> Status: repositioned on 2026-09-29 (platform focus, ENTSO-E domain), draft. Decisions still open are listed under **Open decisions**; when one is made, write an ADR and update this file. M0 scaffolding is in place: Go module, Makefile, compose stack, CI and observability provisioning (ADR 0007), plus a `cmd/ingest` skeleton (health/readiness/metrics endpoints, graceful shutdown, no ingestion logic yet) that runs in compose from the shared root `Dockerfile` (ADR 0008). `make test` and `make lint` pass. Current milestone: M1, ENTSO-E day-ahead prices for NL into Postgres (see `docs/roadmap.md`).
+> Status: repositioned on 2026-09-29 (platform focus, ENTSO-E domain), draft. Decisions still open are listed under **Open decisions**; when one is made, write an ADR and update this file. M0 scaffolding is in place (ADR 0007, 0008). `make test` and `make lint` pass. Current milestone: M1, ENTSO-E day-ahead prices for NL into Postgres (see `docs/roadmap.md`). Done: the A44 parser and the HTTP client with retries (`internal/entsoe`, ADR 0015), the batch upsert (`db.UpsertDayAheadPrices`, ADR 0016), and the ticker-driven job with metrics (`internal/ingest`, ADR 0017) wired into `cmd/ingest`. The freshness alerts (`observability/prometheus/rules/ingest.yml`, 45-minute threshold, unit-tested with promtool) and the Ingestion Grafana dashboard are in place. Not done: a run against the live API and the M1 demo. There is no Alertmanager in the compose stack yet, so alerts are visible only in Prometheus.
 
 ## Working rules for Claude
 - **The owner writes the core logic**: CDC handling, ingestion-service internals, delivery guarantees (retries, idempotency, offset/LSN handling, at-least-once vs exactly-once). For this code, review it, point out problems and suggest approaches. **Do not write the implementation unless explicitly asked.**
@@ -33,7 +33,7 @@ Observability: Prometheus + Grafana + Alertmanager across all components
 
 ## Stack
 - **Go** (1.27 installed locally; the version is pinned in `go.mod`): services and tooling. Format with gofmt/goimports, lint with golangci-lint.
-- **Postgres** with `wal_level=logical` as the operational store. Access via `pgx/v5` + `pgxpool` directly (ADR 0011); schema migrations with goose, SQL only, embedded in the binary (`internal/db/migrations`, ADR 0010), applied by the one-shot `ingest migrate` compose service before `ingest` starts (ADR 0013). Prices live in a current-state table with upserts (ADR 0012).
+- **Postgres** with `wal_level=logical` as the operational store. Access via `pgx/v5` + `pgxpool` directly (ADR 0011); schema migrations with goose, SQL only, embedded in the binary (`internal/db/migrations`, ADR 0010), applied by the one-shot `ingest migrate` compose service before `ingest` starts (ADR 0013). Prices live in a current-state table (ADR 0012), written with a single `unnest` batch upsert (ADR 0016). In Go, prices are `int64` cents (ADR 0014).
 - **Kafka** (KRaft) as the broker (ADR 0005). **Debezium** on Kafka Connect for CDC (ADR 0004, 0006).
 - **Analytical store**: see Open decisions.
 - **Observability**: Prometheus, Grafana (dashboards as code), Alertmanager.
@@ -58,6 +58,7 @@ docs/roadmap.md          # milestones
 make build        # go build ./...
 make test         # go test -race ./...
 make test-int     # go test -race -tags=integration ./...   (testcontainers-go)
+make test-rules   # promtool test rules (Prometheus alert rule unit tests, needs Docker)
 make lint         # golangci-lint run
 make up / down    # docker compose up -d / docker compose down  (never -v without asking)
 make migrate      # apply schema migrations (one-shot compose service)

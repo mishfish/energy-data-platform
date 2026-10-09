@@ -77,6 +77,12 @@ services:
     environment:
       INGEST_HTTP_ADDR: :8080
       DATABASE_URL: *database-url
+      # Required: ingest exits at startup when the token is empty.
+      ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN:-}
+      ENTSOE_BASE_URL: ${ENTSOE_BASE_URL:-}
+      INGEST_DAY_AHEAD_INTERVAL: ${INGEST_DAY_AHEAD_INTERVAL:-}
+      INGEST_DAY_AHEAD_LOOK_BACK: ${INGEST_DAY_AHEAD_LOOK_BACK:-}
+      INGEST_DAY_AHEAD_LOOK_AHEAD: ${INGEST_DAY_AHEAD_LOOK_AHEAD:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -1,0 +1,30 @@
+groups:
+  - name: ingest
+    rules:
+      # Freshness of each dataset: time since the last run that fetched data and stored it.
+      # last_over_time keeps the last known value for an hour after scrapes stop, so the alert also
+      # fires when the ingest process itself is down, not only when its runs fail.
+      - alert: IngestStale
+        expr: time() - max by (dataset) (last_over_time(ingest_last_success_timestamp_seconds[1h])) > 45 * 60
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful {{ $labels.dataset }} fetch for {{ $value | humanizeDuration }}"
+          description: >-
+            The ingest service has not fetched and stored {{ $labels.dataset }} for more than 45 minutes
+            (three missed runs at the default 15-minute interval). Check ingest_fetches_total by result
+            and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
+
+      # The gauge has no series until the first successful run, and its last value ages out of the
+      # window above an hour after scrapes stop. Both cases mean there is nothing to measure freshness from.
+      - alert: IngestNeverSucceeded
+        expr: absent(ingest_last_success_timestamp_seconds{dataset="day_ahead_price"})
+        for: 45m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful {{ $labels.dataset }} fetch on record"
+          description: >-
+            ingest_last_success_timestamp_seconds for {{ $labels.dataset }} has been absent for 45 minutes:
+            either the ingest service has not completed a single successful run since it started, or it
+            is not being scraped at all.
