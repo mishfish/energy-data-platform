@@ -1,0 +1,12 @@
+# Local dev only: every alert goes to a null receiver, so Alertmanager groups and
+# deduplicates alerts and shows them at :9093, but nothing is actually delivered.
+# Replace the route/receiver when a real notification target exists (email, Slack, PagerDuty, ...).
+route:
+  receiver: "null"
+  group_by: ["alertname", "dataset"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: "null"
