@@ -11,6 +11,8 @@ tests:
       # A successful run every 15 minutes: the gauge jumps by 900 s every 15 samples.
       - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", job="ingest"}'
         values: '0x14 900x14 1800x14 2700x14 3600x14 4500x14 5400x14'
+      - series: 'ingest_last_success_timestamp_seconds{dataset="actual_load", job="ingest"}'
+        values: '0x14 900x14 1800x14 2700x14 3600x14 4500x14 5400x14'
     alert_rule_test:
       - eval_time: 44m
         alertname: IngestStale
@@ -22,9 +24,11 @@ tests:
   - name: runs keep failing while the service is up
     interval: 1m
     input_series:
-      # Last success at t=0, the service stays up and keeps exporting the same value.
+      # Last success at t=0, the service stays up and keeps exporting the same value. Load stays healthy.
       - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", job="ingest"}'
         values: '0x120'
+      - series: 'ingest_last_success_timestamp_seconds{dataset="actual_load", job="ingest"}'
+        values: '0+60x120'
     alert_rule_test:
       - eval_time: 45m
         alertname: IngestStale
@@ -46,8 +50,10 @@ tests:
   - name: ingest process stopped
     interval: 1m
     input_series:
-      # Last success at t=0, scrapes stop after 10 minutes.
+      # Last success at t=0, scrapes stop after 10 minutes. Every dataset goes stale together.
       - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", job="ingest"}'
+        values: '0x10 stale'
+      - series: 'ingest_last_success_timestamp_seconds{dataset="actual_load", job="ingest"}'
         values: '0x10 stale'
     alert_rule_test:
       - eval_time: 44m
@@ -64,6 +70,15 @@ tests:
                 The ingest service has not fetched and stored day_ahead_price for more than 45 minutes
                 (three missed runs at the default 15-minute interval). Check ingest_fetches_total by result
                 and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
+          - exp_labels:
+              severity: critical
+              dataset: actual_load
+            exp_annotations:
+              summary: "No successful actual_load fetch for 46m 0s"
+              description: >-
+                The ingest service has not fetched and stored actual_load for more than 45 minutes
+                (three missed runs at the default 15-minute interval). Check ingest_fetches_total by result
+                and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
       # Once the last sample ages out of the 1h window, the absent-series alert has already taken over.
       - eval_time: 75m
         alertname: IngestNeverSucceeded
@@ -77,11 +92,22 @@ tests:
                 ingest_last_success_timestamp_seconds for day_ahead_price has been absent for 45 minutes:
                 either the ingest service has not completed a single successful run since it started, or it
                 is not being scraped at all.
+          - exp_labels:
+              severity: critical
+              dataset: actual_load
+            exp_annotations:
+              summary: "No successful actual_load fetch on record"
+              description: >-
+                ingest_last_success_timestamp_seconds for actual_load has been absent for 45 minutes:
+                either the ingest service has not completed a single successful run since it started, or it
+                is not being scraped at all.
 
   - name: service started but never succeeded
     interval: 1m
     input_series:
       - series: 'ingest_fetches_total{dataset="day_ahead_price", result="fetch_error", job="ingest"}'
+        values: '1+0x120'
+      - series: 'ingest_fetches_total{dataset="actual_load", result="fetch_error", job="ingest"}'
         values: '1+0x120'
     alert_rule_test:
       - eval_time: 44m
@@ -96,6 +122,38 @@ tests:
               summary: "No successful day_ahead_price fetch on record"
               description: >-
                 ingest_last_success_timestamp_seconds for day_ahead_price has been absent for 45 minutes:
+                either the ingest service has not completed a single successful run since it started, or it
+                is not being scraped at all.
+          - exp_labels:
+              severity: critical
+              dataset: actual_load
+            exp_annotations:
+              summary: "No successful actual_load fetch on record"
+              description: >-
+                ingest_last_success_timestamp_seconds for actual_load has been absent for 45 minutes:
+                either the ingest service has not completed a single successful run since it started, or it
+                is not being scraped at all.
+      - eval_time: 46m
+        alertname: IngestStale
+
+  - name: one dataset never succeeds while the other is healthy
+    interval: 1m
+    input_series:
+      - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", job="ingest"}'
+        values: '0+60x120'
+      - series: 'ingest_fetches_total{dataset="actual_load", result="fetch_error", job="ingest"}'
+        values: '1+0x120'
+    alert_rule_test:
+      - eval_time: 46m
+        alertname: IngestNeverSucceeded
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              dataset: actual_load
+            exp_annotations:
+              summary: "No successful actual_load fetch on record"
+              description: >-
+                ingest_last_success_timestamp_seconds for actual_load has been absent for 45 minutes:
                 either the ingest service has not completed a single successful run since it started, or it
                 is not being scraped at all.
       - eval_time: 46m

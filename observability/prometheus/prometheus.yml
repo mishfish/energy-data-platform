@@ -17,4 +17,10 @@ scrape_configs:
   - job_name: ingest
     static_configs:
       - targets: ["ingest:8080"]
-  # Kafka/Connect JMX exporters and postgres_exporter are added as they land (M2).
+  - job_name: sink
+    static_configs:
+      - targets: ["sink:8080"]
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+  # Kafka/Connect JMX exporters are not scraped yet: slot metrics cover a stopped connector (ADR 0023).

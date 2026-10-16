@@ -1,0 +1,34 @@
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "tasks.max": "1",
+
+  "database.hostname": "postgres",
+  "database.port": "5432",
+  "database.user": "${env:POSTGRES_USER}",
+  "database.password": "${env:POSTGRES_PASSWORD}",
+  "database.dbname": "${env:POSTGRES_DB}",
+
+  "plugin.name": "pgoutput",
+  "publication.name": "energy_cdc",
+  "publication.autocreate.mode": "disabled",
+  "slot.name": "debezium_energy",
+  "table.include.list": "public.day_ahead_price,public.actual_load",
+  "snapshot.mode": "initial",
+  "heartbeat.interval.ms": "10000",
+
+  "topic.prefix": "energy",
+  "topic.creation.default.partitions": "1",
+  "topic.creation.default.replication.factor": "1",
+
+  "decimal.handling.mode": "string",
+  "interval.handling.mode": "numeric",
+
+  "key.converter": "io.apicurio.registry.utils.converter.AvroConverter",
+  "key.converter.apicurio.registry.url": "http://apicurio:8080/apis/registry/v3",
+  "key.converter.apicurio.registry.auto-register": "true",
+  "key.converter.apicurio.registry.find-latest": "true",
+  "value.converter": "io.apicurio.registry.utils.converter.AvroConverter",
+  "value.converter.apicurio.registry.url": "http://apicurio:8080/apis/registry/v3",
+  "value.converter.apicurio.registry.auto-register": "true",
+  "value.converter.apicurio.registry.find-latest": "true"
+}

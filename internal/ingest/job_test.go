@@ -17,22 +17,22 @@ import (
 
 const zoneNL = "10YNL----------L"
 
-type fetcherFunc func(ctx context.Context, zone string, start, end time.Time) ([]entsoe.DayAheadPrice, error)
+type (
+	fetchFunc = func(ctx context.Context, zone string, start, end time.Time) ([]entsoe.DayAheadPrice, error)
+	storeFunc = func(ctx context.Context, prices []entsoe.DayAheadPrice) (int64, error)
+)
 
-func (f fetcherFunc) DayAheadPrices(ctx context.Context, zone string, start, end time.Time) ([]entsoe.DayAheadPrice, error) {
-	return f(ctx, zone, start, end)
-}
-
-// newJob returns a job with a 15-minute interval and its own metrics registry.
-func newJob(t *testing.T, fetch fetcherFunc, store PriceStore) (*DayAheadJob, *prometheus.Registry) {
+// newJob returns a day-ahead price job with a 15-minute interval and its own metrics registry.
+func newJob(t *testing.T, fetch fetchFunc, store storeFunc) (*Job[entsoe.DayAheadPrice], *prometheus.Registry) {
 	t.Helper()
 	reg := prometheus.NewRegistry()
 	metrics, err := NewMetrics(reg)
 	if err != nil {
 		t.Fatalf("NewMetrics: %v", err)
 	}
-	return &DayAheadJob{
-		Fetcher:   fetch,
+	return &Job[entsoe.DayAheadPrice]{
+		Dataset:   DatasetDayAheadPrice,
+		Fetch:     fetch,
 		Store:     store,
 		Metrics:   metrics,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -120,7 +120,7 @@ func TestWindow(t *testing.T) {
 	}
 }
 
-func TestDayAheadJobRunOnceResults(t *testing.T) {
+func TestJobRunOnceResults(t *testing.T) {
 	prices := make([]entsoe.DayAheadPrice, 96)
 	tests := []struct {
 		name        string
@@ -171,7 +171,7 @@ func TestDayAheadJobRunOnceResults(t *testing.T) {
 					if result == tt.wantResult {
 						want = 1
 					}
-					labels := map[string]string{"dataset": datasetDayAheadPrice, "result": result}
+					labels := map[string]string{"dataset": DatasetDayAheadPrice, "result": result}
 					if got := metricValue(t, reg, "ingest_fetches_total", labels); got != want {
 						t.Errorf("ingest_fetches_total{result=%q} = %v, want %v", result, got, want)
 					}
@@ -179,7 +179,7 @@ func TestDayAheadJobRunOnceResults(t *testing.T) {
 						t.Errorf("ingest_fetch_duration_seconds{result=%q} count = %v, want %v", result, got, want)
 					}
 				}
-				dataset := map[string]string{"dataset": datasetDayAheadPrice}
+				dataset := map[string]string{"dataset": DatasetDayAheadPrice}
 				if got := metricValue(t, reg, "ingest_rows_upserted_total", dataset); got != tt.wantRows {
 					t.Errorf("ingest_rows_upserted_total = %v, want %v", got, tt.wantRows)
 				}
@@ -195,7 +195,7 @@ func TestDayAheadJobRunOnceResults(t *testing.T) {
 	}
 }
 
-func TestDayAheadJobRunSchedule(t *testing.T) {
+func TestJobRunSchedule(t *testing.T) {
 	tests := []struct {
 		name          string
 		fetchDuration time.Duration
@@ -250,7 +250,7 @@ func TestDayAheadJobRunSchedule(t *testing.T) {
 	}
 }
 
-func TestDayAheadJobShutdownDuringRun(t *testing.T) {
+func TestJobShutdownDuringRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		job, reg := newJob(t,
 			func(ctx context.Context, _ string, _, _ time.Time) ([]entsoe.DayAheadPrice, error) {
@@ -274,7 +274,7 @@ func TestDayAheadJobShutdownDuringRun(t *testing.T) {
 
 		// An interrupted run says nothing about the source, so it must not count as a failure.
 		for _, result := range []string{resultSuccess, resultNoData, resultFetchError, resultStoreError} {
-			labels := map[string]string{"dataset": datasetDayAheadPrice, "result": result}
+			labels := map[string]string{"dataset": DatasetDayAheadPrice, "result": result}
 			if got := metricValue(t, reg, "ingest_fetches_total", labels); got != 0 {
 				t.Errorf("ingest_fetches_total{result=%q} = %v, want 0", result, got)
 			}
@@ -282,7 +282,7 @@ func TestDayAheadJobShutdownDuringRun(t *testing.T) {
 	})
 }
 
-func TestDayAheadJobRunInitialisesSeries(t *testing.T) {
+func TestJobRunInitialisesSeries(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		job, reg := newJob(t,
 			func(ctx context.Context, _ string, _, _ time.Time) ([]entsoe.DayAheadPrice, error) {

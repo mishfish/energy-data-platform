@@ -13,6 +13,11 @@ const (
 	defaultDayAheadInterval  = 15 * time.Minute
 	defaultDayAheadLookBack  = 24 * time.Hour
 	defaultDayAheadLookAhead = 48 * time.Hour
+
+	defaultActualLoadInterval = 15 * time.Minute
+	// Realised load is revised days to weeks after publication (ADR 0020).
+	defaultActualLoadLookBack  = 7 * 24 * time.Hour
+	defaultActualLoadLookAhead = 24 * time.Hour
 )
 
 // config is the service configuration, read from environment variables (see .env.example).
@@ -25,6 +30,10 @@ type config struct {
 	dayAheadInterval  time.Duration
 	dayAheadLookBack  time.Duration
 	dayAheadLookAhead time.Duration
+
+	actualLoadInterval  time.Duration
+	actualLoadLookBack  time.Duration
+	actualLoadLookAhead time.Duration
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -56,6 +65,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		{"INGEST_DAY_AHEAD_INTERVAL", &cfg.dayAheadInterval, defaultDayAheadInterval, time.Second},
 		{"INGEST_DAY_AHEAD_LOOK_BACK", &cfg.dayAheadLookBack, defaultDayAheadLookBack, 0},
 		{"INGEST_DAY_AHEAD_LOOK_AHEAD", &cfg.dayAheadLookAhead, defaultDayAheadLookAhead, time.Hour},
+		{"INGEST_ACTUAL_LOAD_INTERVAL", &cfg.actualLoadInterval, defaultActualLoadInterval, time.Second},
+		{"INGEST_ACTUAL_LOAD_LOOK_BACK", &cfg.actualLoadLookBack, defaultActualLoadLookBack, 0},
+		{"INGEST_ACTUAL_LOAD_LOOK_AHEAD", &cfg.actualLoadLookAhead, defaultActualLoadLookAhead, time.Hour},
 	}
 	for _, d := range durations {
 		*d.dst = d.fallback

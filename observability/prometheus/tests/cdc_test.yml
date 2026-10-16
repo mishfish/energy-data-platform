@@ -1,0 +1,106 @@
+# Unit tests for rules/cdc.yml. Run with: make test-rules
+rule_files:
+  - ../rules/cdc.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: healthy slot does not alert
+    interval: 1m
+    input_series:
+      - series: 'pg_replication_slots_slot_is_active{slot_name="debezium_energy", slot_type="logical"}'
+        values: '1x60'
+      - series: 'pg_replication_slots_safe_wal_size_bytes{slot_name="debezium_energy", slot_type="logical"}'
+        values: '2147483648x60'
+      - series: 'pg_replication_slots_wal_status{slot_name="debezium_energy", slot_type="logical", wal_status="reserved"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: CDCSlotInactive
+      - eval_time: 60m
+        alertname: CDCSlotWALRetentionHigh
+      - eval_time: 60m
+        alertname: CDCSlotLost
+      - eval_time: 60m
+        alertname: CDCSlotMissing
+
+  - name: connector stops and WAL piles up until the slot is lost
+    interval: 1m
+    input_series:
+      # Connector down from t=10m.
+      - series: 'pg_replication_slots_slot_is_active{slot_name="debezium_energy", slot_type="logical"}'
+        values: '1x9 0x50'
+      # From t=10m, 2 GiB of headroom shrinks by 64 MiB a minute: below 1 GiB from t=27m.
+      - series: 'pg_replication_slots_safe_wal_size_bytes{slot_name="debezium_energy", slot_type="logical"}'
+        values: '2147483648x9 2147483648-67108864x32'
+      - series: 'pg_replication_slots_wal_status{slot_name="debezium_energy", slot_type="logical", wal_status="lost"}'
+        values: '0x42 1x17'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CDCSlotInactive
+      - eval_time: 16m
+        alertname: CDCSlotInactive
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              slot_name: debezium_energy
+              slot_type: logical
+            exp_annotations:
+              summary: "Replication slot debezium_energy has no consumer"
+              description: >-
+                Nothing has read from logical slot debezium_energy for 5 minutes, so Postgres retains WAL
+                for it. Check the connector: curl localhost:8083/connectors/energy-postgres-source/status.
+                Runbook: docs/runbooks/cdc-connector-stopped.md.
+      # Below 1 GiB from t=27m (2 GiB - 17 * 64 MiB), firing 2 minutes later at 832 MiB.
+      - eval_time: 28m
+        alertname: CDCSlotWALRetentionHigh
+      - eval_time: 29m
+        alertname: CDCSlotWALRetentionHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slot_name: debezium_energy
+              slot_type: logical
+            exp_annotations:
+              summary: "Replication slot debezium_energy is 832MiB away from invalidation"
+              description: >-
+                Slot debezium_energy holds back so much WAL that Postgres will invalidate it after another
+                832MiB of writes. An invalidated slot means a re-snapshot.
+                Runbook: docs/runbooks/cdc-connector-stopped.md.
+      - eval_time: 42m
+        alertname: CDCSlotLost
+      - eval_time: 43m
+        alertname: CDCSlotLost
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slot_name: debezium_energy
+              slot_type: logical
+              wal_status: lost
+            exp_annotations:
+              summary: "Replication slot debezium_energy is lost"
+              description: >-
+                Postgres invalidated slot debezium_energy after it exceeded max_slot_wal_keep_size. Changes
+                made while the connector was down are no longer available from WAL.
+                Runbook: docs/runbooks/cdc-connector-stopped.md, section "Slot lost".
+
+  - name: slot dropped
+    interval: 1m
+    input_series:
+      - series: 'pg_replication_slots_slot_is_active{slot_name="debezium_energy", slot_type="logical"}'
+        values: '1x4 stale'
+    alert_rule_test:
+      # The series goes stale at t=5m; absent() fires 10 minutes later and keeps the matcher label.
+      - eval_time: 14m
+        alertname: CDCSlotMissing
+      - eval_time: 16m
+        alertname: CDCSlotMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slot_name: debezium_energy
+            exp_annotations:
+              summary: "Replication slot debezium_energy is not reported"
+              description: >-
+                No metrics for slot debezium_energy for 10 minutes: either the slot does not exist (dropped, or
+                never created because the connector never started), or postgres-exporter is not being scraped.

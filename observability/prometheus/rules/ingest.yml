@@ -17,8 +17,11 @@ groups:
 
       # The gauge has no series until the first successful run, and its last value ages out of the
       # window above an hour after scrapes stop. Both cases mean there is nothing to measure freshness from.
+      # absent() needs the dataset spelled out, so every dataset the service ingests is listed here.
       - alert: IngestNeverSucceeded
-        expr: absent(ingest_last_success_timestamp_seconds{dataset="day_ahead_price"})
+        expr: |
+          absent(ingest_last_success_timestamp_seconds{dataset="day_ahead_price"})
+          or absent(ingest_last_success_timestamp_seconds{dataset="actual_load"})
         for: 45m
         labels:
           severity: critical

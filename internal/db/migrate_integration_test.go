@@ -91,6 +91,42 @@ func TestMigrate(t *testing.T) {
 	}
 }
 
+// The CDC publication must list exactly the streamed tables, each with REPLICA IDENTITY FULL (ADR 0022).
+func TestMigrateCDCPublication(t *testing.T) {
+	conn := migratedConn(t)
+
+	rows, err := conn.Query(t.Context(), `
+		SELECT p.tablename, c.relreplident
+		FROM pg_publication_tables p
+		JOIN pg_class c ON c.oid = format('%I.%I', p.schemaname, p.tablename)::regclass
+		WHERE p.pubname = 'energy_cdc'
+		ORDER BY p.tablename`)
+	if err != nil {
+		t.Fatalf("query publication: %v", err)
+	}
+	got := map[string]string{}
+	for rows.Next() {
+		var table, identity string
+		if err := rows.Scan(&table, &identity); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[table] = identity
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+
+	want := map[string]string{"actual_load": "f", "day_ahead_price": "f"} // f = FULL
+	if len(got) != len(want) {
+		t.Fatalf("publication energy_cdc has tables %v, want %v", got, want)
+	}
+	for table, identity := range want {
+		if got[table] != identity {
+			t.Errorf("table %s: replica identity %q, want %q", table, got[table], identity)
+		}
+	}
+}
+
 // Several migrators starting at once (e.g. replicas) must serialise on the advisory lock, not fail.
 func TestMigrateConcurrent(t *testing.T) {
 	dsn := startPostgres(t)

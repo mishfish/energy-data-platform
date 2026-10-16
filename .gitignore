@@ -2,6 +2,8 @@
 /bin/
 # binaries from a bare `go build ./cmd/<name>` in the repo root
 /ingest
+/fakeentsoe
+/sink
 coverage.out
 *.test
 

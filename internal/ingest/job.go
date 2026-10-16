@@ -10,7 +10,11 @@ import (
 	"github.com/mishfish/energy-data-platform/internal/entsoe"
 )
 
-const datasetDayAheadPrice = "day_ahead_price"
+// Datasets, used as the "dataset" metric label and log field.
+const (
+	DatasetDayAheadPrice = "day_ahead_price"
+	DatasetActualLoad    = "actual_load"
+)
 
 // Results of one run, used as the "result" metric label.
 const (
@@ -20,19 +24,15 @@ const (
 	resultStoreError = "store_error"
 )
 
-// PriceFetcher fetches day-ahead prices of a bidding zone for [start, end).
-type PriceFetcher interface {
-	DayAheadPrices(ctx context.Context, zone string, start, end time.Time) ([]entsoe.DayAheadPrice, error)
-}
-
-// PriceStore writes prices idempotently and returns how many rows were inserted or changed.
-type PriceStore func(ctx context.Context, prices []entsoe.DayAheadPrice) (int64, error)
-
-// DayAheadJob re-fetches a sliding window of day-ahead prices on a fixed interval and upserts it.
+// Job re-fetches a sliding window of one dataset on a fixed interval and upserts it (ADR 0017, 0020).
 // Re-fetching is what picks up revisions; the store turns unchanged rows into no-ops.
-type DayAheadJob struct {
-	Fetcher PriceFetcher
-	Store   PriceStore
+type Job[T any] struct {
+	Dataset string
+	// Fetch returns the values of a bidding zone for [start, end). An error matching entsoe.ErrNoData
+	// is reported as no_data rather than as a failure.
+	Fetch func(ctx context.Context, zone string, start, end time.Time) ([]T, error)
+	// Store writes values idempotently and returns how many rows were inserted or changed.
+	Store   func(ctx context.Context, values []T) (int64, error)
 	Metrics *Metrics
 	Logger  *slog.Logger
 
@@ -45,8 +45,8 @@ type DayAheadJob struct {
 
 // Run fetches once immediately and then on every tick until ctx is cancelled. Runs never overlap:
 // a run that outlasts the interval delays the next one, and the ticks it missed are dropped.
-func (j *DayAheadJob) Run(ctx context.Context) {
-	j.Metrics.initDataset(datasetDayAheadPrice)
+func (j *Job[T]) Run(ctx context.Context) {
+	j.Metrics.initDataset(j.Dataset)
 	ticker := time.NewTicker(j.Interval)
 	defer ticker.Stop()
 	for {
@@ -61,10 +61,10 @@ func (j *DayAheadJob) Run(ctx context.Context) {
 
 // runOnce does one fetch and upsert and records its outcome. A failed run is not retried here
 // beyond what the fetcher already does; the next tick fetches the same window again.
-func (j *DayAheadJob) runOnce(ctx context.Context) {
+func (j *Job[T]) runOnce(ctx context.Context) {
 	started := time.Now()
 	start, end := window(started, j.LookBack, j.LookAhead)
-	logger := j.Logger.With("dataset", datasetDayAheadPrice, "zone", j.Zone,
+	logger := j.Logger.With("dataset", j.Dataset, "zone", j.Zone,
 		"window_start", start.Format(time.RFC3339), "window_end", end.Format(time.RFC3339))
 
 	result, fetched, changed, err := j.fetchAndStore(ctx, start, end)
@@ -75,7 +75,7 @@ func (j *DayAheadJob) runOnce(ctx context.Context) {
 	}
 
 	elapsed := time.Since(started)
-	j.Metrics.observe(datasetDayAheadPrice, result, elapsed, changed)
+	j.Metrics.observe(j.Dataset, result, elapsed, changed)
 	logger = logger.With("result", result, "duration", elapsed.String())
 	switch result {
 	case resultSuccess:
@@ -87,19 +87,19 @@ func (j *DayAheadJob) runOnce(ctx context.Context) {
 	}
 }
 
-func (j *DayAheadJob) fetchAndStore(ctx context.Context, start, end time.Time) (result string, fetched int, changed int64, err error) {
-	prices, err := j.Fetcher.DayAheadPrices(ctx, j.Zone, start, end)
+func (j *Job[T]) fetchAndStore(ctx context.Context, start, end time.Time) (result string, fetched int, changed int64, err error) {
+	values, err := j.Fetch(ctx, j.Zone, start, end)
 	switch {
 	case errors.Is(err, entsoe.ErrNoData):
 		return resultNoData, 0, 0, err
 	case err != nil:
 		return resultFetchError, 0, 0, err
 	}
-	changed, err = j.Store(ctx, prices)
+	changed, err = j.Store(ctx, values)
 	if err != nil {
-		return resultStoreError, len(prices), 0, err
+		return resultStoreError, len(values), 0, err
 	}
-	return resultSuccess, len(prices), changed, nil
+	return resultSuccess, len(values), changed, nil
 }
 
 // window returns the fetch interval around the UTC midnight of now. Anchoring it to midnight keeps

@@ -38,6 +38,10 @@ func TestLoadConfig(t *testing.T) {
 			dayAheadInterval:  15 * time.Minute,
 			dayAheadLookBack:  24 * time.Hour,
 			dayAheadLookAhead: 48 * time.Hour,
+
+			actualLoadInterval:  15 * time.Minute,
+			actualLoadLookBack:  7 * 24 * time.Hour,
+			actualLoadLookAhead: 24 * time.Hour,
 		}
 		if cfg != want {
 			t.Errorf("got %+v, want %+v", cfg, want)
@@ -46,18 +50,22 @@ func TestLoadConfig(t *testing.T) {
 
 	t.Run("overrides", func(t *testing.T) {
 		env := with(map[string]string{
-			"INGEST_HTTP_ADDR":            ":9000",
-			"ENTSOE_BASE_URL":             "http://localhost:8081/api",
-			"INGEST_DAY_AHEAD_INTERVAL":   "1m",
-			"INGEST_DAY_AHEAD_LOOK_BACK":  "0s",
-			"INGEST_DAY_AHEAD_LOOK_AHEAD": "72h",
+			"INGEST_HTTP_ADDR":              ":9000",
+			"ENTSOE_BASE_URL":               "http://localhost:8081/api",
+			"INGEST_DAY_AHEAD_INTERVAL":     "1m",
+			"INGEST_DAY_AHEAD_LOOK_BACK":    "0s",
+			"INGEST_DAY_AHEAD_LOOK_AHEAD":   "72h",
+			"INGEST_ACTUAL_LOAD_INTERVAL":   "5m",
+			"INGEST_ACTUAL_LOAD_LOOK_BACK":  "720h",
+			"INGEST_ACTUAL_LOAD_LOOK_AHEAD": "2h",
 		})
 		cfg, err := loadConfig(func(k string) string { return env[k] })
 		if err != nil {
 			t.Fatalf("loadConfig: %v", err)
 		}
 		if cfg.httpAddr != ":9000" || cfg.entsoeBaseURL != "http://localhost:8081/api" ||
-			cfg.dayAheadInterval != time.Minute || cfg.dayAheadLookBack != 0 || cfg.dayAheadLookAhead != 72*time.Hour {
+			cfg.dayAheadInterval != time.Minute || cfg.dayAheadLookBack != 0 || cfg.dayAheadLookAhead != 72*time.Hour ||
+			cfg.actualLoadInterval != 5*time.Minute || cfg.actualLoadLookBack != 720*time.Hour || cfg.actualLoadLookAhead != 2*time.Hour {
 			t.Errorf("got %+v", cfg)
 		}
 	})
@@ -73,6 +81,8 @@ func TestLoadConfig(t *testing.T) {
 		{"zero interval", map[string]string{"INGEST_DAY_AHEAD_INTERVAL": "0s"}, "INGEST_DAY_AHEAD_INTERVAL"},
 		{"negative look-back", map[string]string{"INGEST_DAY_AHEAD_LOOK_BACK": "-24h"}, "INGEST_DAY_AHEAD_LOOK_BACK"},
 		{"zero look-ahead", map[string]string{"INGEST_DAY_AHEAD_LOOK_AHEAD": "0s"}, "INGEST_DAY_AHEAD_LOOK_AHEAD"},
+		{"zero load interval", map[string]string{"INGEST_ACTUAL_LOAD_INTERVAL": "0s"}, "INGEST_ACTUAL_LOAD_INTERVAL"},
+		{"negative load look-back", map[string]string{"INGEST_ACTUAL_LOAD_LOOK_BACK": "-1h"}, "INGEST_ACTUAL_LOAD_LOOK_BACK"},
 	}
 	for _, tt := range invalid {
 		t.Run(tt.name, func(t *testing.T) {

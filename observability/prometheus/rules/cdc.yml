@@ -1,0 +1,54 @@
+groups:
+  - name: cdc
+    rules:
+      # The slot has no consumer: the connector, its task or Connect itself is down. Postgres keeps
+      # every WAL segment from here on, up to max_slot_wal_keep_size (ADR 0023).
+      - alert: CDCSlotInactive
+        expr: pg_replication_slots_slot_is_active{slot_type="logical"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Replication slot {{ $labels.slot_name }} has no consumer"
+          description: >-
+            Nothing has read from logical slot {{ $labels.slot_name }} for 5 minutes, so Postgres retains WAL
+            for it. Check the connector: curl localhost:8083/connectors/energy-postgres-source/status.
+            Runbook: docs/runbooks/cdc-connector-stopped.md.
+
+      # Fires at half the cap, which leaves time to restart the connector before the slot is lost.
+      - alert: CDCSlotWALRetentionHigh
+        expr: pg_replication_slots_safe_wal_size_bytes{slot_type="logical"} < 1024 * 1024 * 1024
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Replication slot {{ $labels.slot_name }} is {{ $value | humanize1024 }}B away from invalidation"
+          description: >-
+            Slot {{ $labels.slot_name }} holds back so much WAL that Postgres will invalidate it after another
+            {{ $value | humanize1024 }}B of writes. An invalidated slot means a re-snapshot.
+            Runbook: docs/runbooks/cdc-connector-stopped.md.
+
+      # The slot passed max_slot_wal_keep_size and Postgres removed WAL it still needed. The connector
+      # cannot resume from it; recovery is a re-snapshot.
+      - alert: CDCSlotLost
+        expr: pg_replication_slots_wal_status{slot_type="logical", wal_status="lost"} == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: "Replication slot {{ $labels.slot_name }} is lost"
+          description: >-
+            Postgres invalidated slot {{ $labels.slot_name }} after it exceeded max_slot_wal_keep_size. Changes
+            made while the connector was down are no longer available from WAL.
+            Runbook: docs/runbooks/cdc-connector-stopped.md, section "Slot lost".
+
+      # absent() needs the slot spelled out. Covers a dropped slot and a postgres_exporter that is down.
+      - alert: CDCSlotMissing
+        expr: absent(pg_replication_slots_slot_is_active{slot_name="debezium_energy"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Replication slot debezium_energy is not reported"
+          description: >-
+            No metrics for slot debezium_energy for 10 minutes: either the slot does not exist (dropped, or
+            never created because the connector never started), or postgres-exporter is not being scraped.

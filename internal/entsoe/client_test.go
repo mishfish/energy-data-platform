@@ -108,6 +108,45 @@ func TestClientDayAheadPricesRequest(t *testing.T) {
 	}
 }
 
+func TestClientActualLoadRequest(t *testing.T) {
+	var got *http.Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r
+		_, _ = w.Write(readFixture(t, "a65_nl_pt15m.xml"))
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL+"/api", testToken)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	loads, err := client.ActualLoad(context.Background(), zoneNL, windowStart, windowEnd)
+	if err != nil {
+		t.Fatalf("ActualLoad: %v", err)
+	}
+	if len(loads) != 96 {
+		t.Errorf("got %d slots, want 96", len(loads))
+	}
+
+	want := map[string]string{
+		"securityToken":         testToken,
+		"documentType":          "A65",
+		"processType":           "A16",
+		"outBiddingZone_Domain": zoneNL,
+		"periodStart":           "202610012200",
+		"periodEnd":             "202610022200",
+	}
+	query := got.URL.Query()
+	if len(query) != len(want) {
+		t.Errorf("got %d query parameters, want %d: %v", len(query), len(want), query)
+	}
+	for name, value := range want {
+		if query.Get(name) != value {
+			t.Errorf("query parameter %s = %q, want %q", name, query.Get(name), value)
+		}
+	}
+}
+
 func TestClientDayAheadPricesRetries(t *testing.T) {
 	prices := readFixture(t, "a44_nl_pt15m.xml")
 	noData := readFixture(t, "acknowledgement_no_data.xml")

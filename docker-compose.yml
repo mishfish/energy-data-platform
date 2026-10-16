@@ -7,6 +7,14 @@ x-ingest-image: &ingest-image
       SERVICE: ingest
   image: energy-data-platform-ingest
 
+x-sink-image: &sink-image
+  build:
+    context: .
+    args:
+      SERVICE: sink
+      CGO: "1" # confluent-kafka-go (ADR 0028)
+  image: energy-data-platform-sink
+
 x-database-url: &database-url postgres://${POSTGRES_USER:-energy}:${POSTGRES_PASSWORD:-energy}@postgres:5432/${POSTGRES_DB:-energy}?sslmode=disable
 
 services:
@@ -20,6 +28,10 @@ services:
       - max_replication_slots=4
       - -c
       - max_wal_senders=4
+      # Caps the WAL a replication slot may hold back (ADR 0023). A connector that stays down longer
+      # gets its slot invalidated instead of filling the disk; recovery is a re-snapshot.
+      - -c
+      - max_slot_wal_keep_size=2GB
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-energy}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-energy}
@@ -61,6 +73,173 @@ services:
       start_period: 20s
       retries: 10
 
+  # Kafka Connect with the Debezium Postgres connector (ADR 0004, 0006, 0022). Single worker, so
+  # the internal topics have replication factor 1. The connector reads the Postgres credentials from
+  # this container's environment through the env config provider, so the config file holds no secrets.
+  connect:
+    image: quay.io/debezium/connect:3.7.0.Final
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: energy-connect
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_statuses
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      # Ships with the image; the connector still uses JSON until it is switched over (ADR 0025).
+      ENABLE_APICURIO_CONVERTERS: "true"
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      POSTGRES_USER: ${POSTGRES_USER:-energy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-energy}
+      POSTGRES_DB: ${POSTGRES_DB:-energy}
+    ports:
+      - "${CONNECT_PORT:-8083}:8083"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/connectors"]
+      interval: 10s
+      start_period: 30s
+      retries: 10
+
+  # One-shot connector registration, like migrate (ADR 0022). PUT .../config creates or updates the
+  # connector, so re-running it is safe. Waits for the publication created by the migrations.
+  register-connector:
+    image: quay.io/debezium/connect:3.7.0.Final
+    entrypoint:
+      - curl
+      - -fsS
+      - -X
+      - PUT
+      - -H
+      - "Content-Type: application/json"
+      - --data
+      - "@/connectors/energy-postgres-source.json"
+      - http://connect:8083/connectors/energy-postgres-source/config
+    volumes:
+      - ./deploy/connect:/connectors:ro
+    depends_on:
+      connect:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # Postgres metrics, including replication slot state and retained WAL (ADR 0023).
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+    environment:
+      DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB:-energy}?sslmode=disable
+      DATA_SOURCE_USER: ${POSTGRES_USER:-energy}
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD:-energy}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Creates the registry database on an existing Postgres volume; init scripts only run on an empty one.
+  registry-db:
+    image: postgres:17
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-energy}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-energy}
+      PGDATABASE: ${POSTGRES_DB:-energy}
+    entrypoint:
+      - sh
+      - -c
+      - echo "SELECT 'CREATE DATABASE registry' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'registry')\gexec" | psql -v ON_ERROR_STOP=1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Schema registry for Avro events (ADR 0025, 0027), state in its own database on our Postgres.
+  apicurio:
+    image: quay.io/apicurio/apicurio-registry:3.3.3
+    environment:
+      APICURIO_STORAGE_KIND: sql
+      APICURIO_STORAGE_SQL_KIND: postgresql
+      APICURIO_DATASOURCE_URL: jdbc:postgresql://postgres:5432/registry
+      APICURIO_DATASOURCE_USERNAME: ${POSTGRES_USER:-energy}
+      APICURIO_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-energy}
+    ports:
+      - "${APICURIO_PORT:-8085}:8080"
+    depends_on:
+      registry-db:
+        condition: service_completed_successfully
+    healthcheck:
+      # Quarkus serves health on its management port, not on the API port.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/health/ready || exit 1"]
+      interval: 10s
+      start_period: 30s
+      retries: 10
+
+  # Analytical store (ADR 0024).
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.28.14
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-energy}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-energy}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-energy}
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"]
+      interval: 5s
+      retries: 20
+
+  # One-shot ClickHouse schema migration, same pattern as migrate (ADR 0013, 0027).
+  sink-migrate:
+    <<: *sink-image
+    command: ["migrate"]
+    environment:
+      CLICKHOUSE_DSN: clickhouse://${CLICKHOUSE_USER:-energy}:${CLICKHOUSE_PASSWORD:-energy}@clickhouse:9000/${CLICKHOUSE_DB:-energy}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+
+  # Kafka -> ClickHouse with at-least-once delivery (ADR 0026, 0028).
+  sink:
+    <<: *sink-image
+    environment:
+      SINK_HTTP_ADDR: :8080
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_URL: http://apicurio:8080/apis/ccompat/v7
+      CLICKHOUSE_DSN: clickhouse://${CLICKHOUSE_USER:-energy}:${CLICKHOUSE_PASSWORD:-energy}@clickhouse:9000/${CLICKHOUSE_DB:-energy}
+      SINK_GROUP_ID: ${SINK_GROUP_ID:-}
+      SINK_TOPICS: ${SINK_TOPICS:-}
+      SINK_BATCH_SIZE: ${SINK_BATCH_SIZE:-}
+      SINK_FLUSH_INTERVAL: ${SINK_FLUSH_INTERVAL:-}
+    depends_on:
+      sink-migrate:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      apicurio:
+        condition: service_healthy
+    ports:
+      - "${SINK_PORT:-8082}:8080"
+    # A poison message stops the sink (fail-fast, ADR 0028); restarting re-reads it and stops again,
+    # which keeps the lag alert firing until someone looks.
+    restart: on-failure
+    # Longer than the sink's 10s final-flush budget.
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      retries: 3
+
   # One-shot schema migration (ADR 0013); ingest starts only after it exits 0.
   migrate:
     <<: *ingest-image
@@ -83,9 +262,16 @@ services:
       INGEST_DAY_AHEAD_INTERVAL: ${INGEST_DAY_AHEAD_INTERVAL:-}
       INGEST_DAY_AHEAD_LOOK_BACK: ${INGEST_DAY_AHEAD_LOOK_BACK:-}
       INGEST_DAY_AHEAD_LOOK_AHEAD: ${INGEST_DAY_AHEAD_LOOK_AHEAD:-}
+      INGEST_ACTUAL_LOAD_INTERVAL: ${INGEST_ACTUAL_LOAD_INTERVAL:-}
+      INGEST_ACTUAL_LOAD_LOOK_BACK: ${INGEST_ACTUAL_LOAD_LOOK_BACK:-}
+      INGEST_ACTUAL_LOAD_LOOK_AHEAD: ${INGEST_ACTUAL_LOAD_LOOK_AHEAD:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
+      # Only present with the "fake" profile (make up-fake); ignored otherwise.
+      fake-entsoe:
+        condition: service_healthy
+        required: false
     ports:
       - "${INGEST_PORT:-8080}:8080"
     # Longer than the service's 10s shutdown timeout, so a drain finishes before SIGKILL.
@@ -94,6 +280,26 @@ services:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
       interval: 10s
       retries: 3
+
+  # Synthetic ENTSO-E API for local runs without a token (ADR 0021). Only `make up-fake` starts it,
+  # in a separate compose project that also points ingest at it; plain `make up` uses the real API.
+  fake-entsoe:
+    build:
+      context: .
+      args:
+        SERVICE: fakeentsoe
+    image: energy-data-platform-fakeentsoe
+    profiles: [fake]
+    environment:
+      FAKE_ENTSOE_ADDR: :8080
+      FAKE_ENTSOE_REVISION_INTERVAL: ${FAKE_ENTSOE_REVISION_INTERVAL:-}
+      FAKE_ENTSOE_REVISION_RATE: ${FAKE_ENTSOE_REVISION_RATE:-}
+    ports:
+      - "${FAKE_ENTSOE_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      retries: 5
 
   prometheus:
     image: prom/prometheus:v3.15.0
@@ -136,6 +342,7 @@ services:
       - prometheus
 
 volumes:
+  clickhouse-data:
   postgres-data:
   kafka-data:
   prometheus-data:

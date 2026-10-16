@@ -1,0 +1,96 @@
+# Unit tests for rules/sink.yml. Run with: make test-rules
+rule_files:
+  - ../rules/sink.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: healthy sink does not alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="sink"}'
+        values: '1x60'
+      # A commit every minute, lag back to zero after each.
+      - series: 'sink_last_commit_timestamp_seconds{job="sink"}'
+        values: '0+60x60'
+      - series: 'sink_consumer_lag{job="sink", topic="energy.public.actual_load", partition="0"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: SinkDown
+      - eval_time: 60m
+        alertname: SinkStalled
+      - eval_time: 60m
+        alertname: SinkLagHigh
+
+  - name: writes keep failing while records wait
+    interval: 1m
+    input_series:
+      - series: 'up{job="sink"}'
+        values: '1x60'
+      # Last commit at t=0; lag grows from t=1m.
+      - series: 'sink_last_commit_timestamp_seconds{job="sink"}'
+        values: '0x60'
+      - series: 'sink_consumer_lag{job="sink", topic="energy.public.actual_load", partition="0"}'
+        values: '0 5+5x59'
+    alert_rule_test:
+      # No commit for more than 10 minutes from t=11m, firing 5 minutes later.
+      - eval_time: 15m
+        alertname: SinkStalled
+      - eval_time: 16m
+        alertname: SinkStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: sink
+            exp_annotations:
+              summary: "The sink has not committed for 16m 0s while records are waiting"
+              description: >-
+                Consumer lag is above zero and no batch has been committed for over 10 minutes, so ClickHouse
+                falls behind Postgres. Check sink_batches_total{result="write_error"} and the sink logs.
+                Runbook: docs/runbooks/sink-stalled.md.
+
+  - name: idle sink with nothing to consume does not stall
+    interval: 1m
+    input_series:
+      - series: 'sink_last_commit_timestamp_seconds{job="sink"}'
+        values: '0x60'
+      - series: 'sink_consumer_lag{job="sink", topic="energy.public.actual_load", partition="0"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: SinkStalled
+
+  - name: sink down and lagging
+    interval: 1m
+    input_series:
+      - series: 'up{job="sink"}'
+        values: '1x4 0x30'
+      - series: 'sink_consumer_lag{job="sink", topic="energy.public.actual_load", partition="0"}'
+        values: '20000x30'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: SinkDown
+      - eval_time: 10m
+        alertname: SinkDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: sink
+            exp_annotations:
+              summary: "The ClickHouse sink is down"
+              description: >-
+                Prometheus has not scraped the sink for 5 minutes. A poison message makes the sink exit on
+                purpose (ADR 0028); check docker compose logs sink.
+                Runbook: docs/runbooks/sink-stalled.md.
+      - eval_time: 10m
+        alertname: SinkLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              topic: energy.public.actual_load
+            exp_annotations:
+              summary: "Sink lag on energy.public.actual_load is 20000 records"
+              description: >-
+                The sink is consuming but not keeping up with energy.public.actual_load, for example during a
+                re-snapshot. Runbook: docs/runbooks/sink-stalled.md.

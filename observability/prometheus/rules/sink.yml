@@ -1,0 +1,41 @@
+groups:
+  - name: sink
+    rules:
+      - alert: SinkDown
+        expr: up{job="sink"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The ClickHouse sink is down"
+          description: >-
+            Prometheus has not scraped the sink for 5 minutes. A poison message makes the sink exit on
+            purpose (ADR 0028); check docker compose logs sink.
+            Runbook: docs/runbooks/sink-stalled.md.
+
+      # Records are waiting but nothing has been committed: writes keep failing, or the sink restarts
+      # on a poison message before its first commit.
+      - alert: SinkStalled
+        expr: >-
+          (time() - sink_last_commit_timestamp_seconds > 600)
+          and on () (max(sink_consumer_lag) > 0)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The sink has not committed for {{ $value | humanizeDuration }} while records are waiting"
+          description: >-
+            Consumer lag is above zero and no batch has been committed for over 10 minutes, so ClickHouse
+            falls behind Postgres. Check sink_batches_total{result="write_error"} and the sink logs.
+            Runbook: docs/runbooks/sink-stalled.md.
+
+      - alert: SinkLagHigh
+        expr: max by (topic) (sink_consumer_lag) > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sink lag on {{ $labels.topic }} is {{ $value }} records"
+          description: >-
+            The sink is consuming but not keeping up with {{ $labels.topic }}, for example during a
+            re-snapshot. Runbook: docs/runbooks/sink-stalled.md.

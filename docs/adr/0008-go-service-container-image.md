@@ -1,6 +1,6 @@
 # 0008: Go service container image
 
-- Status: accepted
+- Status: accepted; amended by ADR 0028 (Alpine builder, optional cgo build for the sink)
 - Date: 2026-09-29
 
 ## Context

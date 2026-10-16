@@ -103,6 +103,27 @@ func (c *Client) DayAheadPrices(ctx context.Context, zone string, start, end tim
 	return prices, nil
 }
 
+// ActualLoad fetches the realised total load (A65, process type A16) of a bidding zone for the
+// interval [start, end). When the platform has no data for the interval, the error matches ErrNoData.
+func (c *Client) ActualLoad(ctx context.Context, zone string, start, end time.Time) ([]ActualLoad, error) {
+	query := url.Values{
+		"documentType":          {documentTypeLoad},
+		"processType":           {processTypeRealised},
+		"outBiddingZone_Domain": {zone},
+		"periodStart":           {start.UTC().Format(periodLayout)},
+		"periodEnd":             {end.UTC().Format(periodLayout)},
+	}
+	body, err := c.get(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("fetch actual load: %w", err)
+	}
+	loads, err := ParseActualLoad(bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("parse actual load: %w", err)
+	}
+	return loads, nil
+}
+
 // get performs the request until it succeeds, fails permanently or runs out of attempts.
 func (c *Client) get(ctx context.Context, query url.Values) ([]byte, error) {
 	for attempt := 1; ; attempt++ {

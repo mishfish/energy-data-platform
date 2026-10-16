@@ -18,8 +18,15 @@ Demo: the stack runs, prices appear in Postgres, stopping the fetcher fires the 
 ## M1.5: More sources (tentative)
 Load (A65), generation per production type (A75), Open-Meteo weather (ADR 0009). More bidding zones once open decision 10 (zone-to-coordinate mapping) is settled.
 
-## M2: CDC into Kafka (tentative)
-Debezium on Kafka Connect (ADR 0004, 0006) streams the Postgres tables into Kafka. Replication slot lag and WAL retention are monitored.
+## M2a: CDC into Kafka
+Debezium on Kafka Connect (ADR 0004, 0006, 0022) streams `day_ahead_price` and `actual_load` into Kafka. Revisions appear as UPDATE events with the old and the new value.
 
-## M3: Sink into the analytical store (tentative)
-Idempotent Go sink from Kafka. Depends on open decisions 3 (analytical store), 4 (serialization) and 5 (delivery semantics).
+Demo: on the synthetic stack (`make up-fake`, ADR 0021), a revised slot shows up in Postgres and as an `op: u` event in its topic.
+
+## M2b: CDC operations (tentative)
+Replication slot lag and WAL retention are monitored and alerted on; connector and task state are visible in Grafana. A runbook covers a stopped connector: what WAL retention does to Postgres, how to recover, when a re-snapshot is needed.
+
+## M3: Sink into ClickHouse
+Connector switched to Avro with Apicurio Registry (ADR 0025). Idempotent Go sink from Kafka into ClickHouse `ReplacingMergeTree` tables versioned by LSN (ADR 0024, 0026), with consumer lag monitored.
+
+Demo: kill the sink between write and offset commit; after restart the redelivered batch leaves no duplicates in `FINAL` reads.
