@@ -22,6 +22,15 @@ jobs:
           go-version-file: go.mod
       - run: go build ./...
       - run: go test -race ./...
+      # Pull the testcontainers images before the tests: a pull that fails inside testcontainers only
+      # surfaced as "No such image" at container create (Apicurio from quay.io). Here a failing pull
+      # fails the step with the registry's own error. The list is read from the tests, so it cannot drift.
+      - name: Pull integration test images
+        run: |
+          grep -rhoE '"(postgres|clickhouse/clickhouse-server|confluentinc/confluent-local|quay\.io/apicurio/apicurio-registry):[^"]+"' \
+            --include='*_integration_test.go' . | tr -d '"' | sort -u | while read -r image; do
+            docker pull --quiet "$image"
+          done
       # testcontainers uses the runner's Docker daemon.
       - run: go test -race -tags=integration ./...
       - uses: golangci/golangci-lint-action@v9
