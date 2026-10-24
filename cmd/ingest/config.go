@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mishfish/energy-data-platform/internal/entsoe"
+	"github.com/mishfish/energy-data-platform/internal/openmeteo"
 )
 
 const (
@@ -28,14 +29,30 @@ const (
 	defaultActualLoadZones = "AL,AT,BA,BE,BG,CH,CY,CZ,DE_LU,DK_1,DK_2,EE,ES,FI,FR,GR,HR,HU," +
 		"IT_CALA,IT_CNOR,IT_CSUD,IT_NORD,IT_SARD,IT_SICI,IT_SUD,LT,LV,ME,MK,NL," +
 		"NO_1,NO_2,NO_3,NO_4,NO_5,PL,PT,RO,RS,SE_1,SE_2,SE_3,SE_4,SI,SK,XK"
+	// Checked on 2026-10-24 (ADR 0030): every zone except GB and UA_IPS publishes A75.
+	defaultGenerationZones = "AL,AT,BA,BE,BG,CH,CY,CZ,DE_LU,DK_1,DK_2,EE,ES,FI,FR,GR,HR,HU,IE_SEM," +
+		"IT_CALA,IT_CNOR,IT_CSUD,IT_NORD,IT_SARD,IT_SICI,IT_SUD,LT,LV,ME,MK,NL," +
+		"NO_1,NO_2,NO_3,NO_4,NO_5,PL,PT,RO,RS,SE_1,SE_2,SE_3,SE_4,SI,SK,XK"
+
+	// Generation is revised like load, so it gets the same window (ADR 0030).
+	defaultGenerationInterval  = 15 * time.Minute
+	defaultGenerationLookBack  = 7 * 24 * time.Hour
+	defaultGenerationLookAhead = 24 * time.Hour
+
+	// Weather (ADR 0031): models update hourly; 7 days of analysis back, 2 days of forecast ahead.
+	defaultWeatherZones     = defaultGenerationZones
+	defaultWeatherInterval  = time.Hour
+	defaultWeatherLookBack  = 7 * 24 * time.Hour
+	defaultWeatherLookAhead = 48 * time.Hour
 )
 
 // config is the service configuration, read from environment variables (see .env.example).
 type config struct {
-	httpAddr      string
-	databaseURL   string
-	entsoeBaseURL string
-	entsoeToken   string
+	httpAddr         string
+	databaseURL      string
+	entsoeBaseURL    string
+	entsoeToken      string
+	openMeteoBaseURL string
 
 	dayAheadZones     []entsoe.Zone
 	dayAheadInterval  time.Duration
@@ -46,6 +63,16 @@ type config struct {
 	actualLoadInterval  time.Duration
 	actualLoadLookBack  time.Duration
 	actualLoadLookAhead time.Duration
+
+	generationZones     []entsoe.Zone
+	generationInterval  time.Duration
+	generationLookBack  time.Duration
+	generationLookAhead time.Duration
+
+	weatherZones     []entsoe.Zone
+	weatherInterval  time.Duration
+	weatherLookBack  time.Duration
+	weatherLookAhead time.Duration
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
@@ -54,6 +81,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 		databaseURL:   getenv("DATABASE_URL"),
 		entsoeBaseURL: getenv("ENTSOE_BASE_URL"),
 		entsoeToken:   getenv("ENTSOE_API_TOKEN"),
+
+		openMeteoBaseURL: getenv("OPEN_METEO_BASE_URL"),
+	}
+	if cfg.openMeteoBaseURL == "" {
+		cfg.openMeteoBaseURL = openmeteo.DefaultBaseURL
 	}
 	if cfg.httpAddr == "" {
 		cfg.httpAddr = defaultHTTPAddr
@@ -75,6 +107,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}{
 		{"INGEST_DAY_AHEAD_ZONES", &cfg.dayAheadZones, defaultDayAheadZones},
 		{"INGEST_ACTUAL_LOAD_ZONES", &cfg.actualLoadZones, defaultActualLoadZones},
+		{"INGEST_GENERATION_ZONES", &cfg.generationZones, defaultGenerationZones},
+		{"INGEST_WEATHER_ZONES", &cfg.weatherZones, defaultWeatherZones},
 	} {
 		list := getenv(z.name)
 		if list == "" {
@@ -85,6 +119,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("%s: %w", z.name, err)
 		}
 		*z.dst = zones
+	}
+	for _, z := range cfg.weatherZones {
+		if len(openmeteo.ZonePoints[z.Name]) == 0 {
+			return config{}, fmt.Errorf("INGEST_WEATHER_ZONES: zone %s has no weather points", z.Name)
+		}
 	}
 
 	durations := []struct {
@@ -99,6 +138,12 @@ func loadConfig(getenv func(string) string) (config, error) {
 		{"INGEST_ACTUAL_LOAD_INTERVAL", &cfg.actualLoadInterval, defaultActualLoadInterval, time.Second},
 		{"INGEST_ACTUAL_LOAD_LOOK_BACK", &cfg.actualLoadLookBack, defaultActualLoadLookBack, 0},
 		{"INGEST_ACTUAL_LOAD_LOOK_AHEAD", &cfg.actualLoadLookAhead, defaultActualLoadLookAhead, time.Hour},
+		{"INGEST_GENERATION_INTERVAL", &cfg.generationInterval, defaultGenerationInterval, time.Second},
+		{"INGEST_GENERATION_LOOK_BACK", &cfg.generationLookBack, defaultGenerationLookBack, 0},
+		{"INGEST_GENERATION_LOOK_AHEAD", &cfg.generationLookAhead, defaultGenerationLookAhead, time.Hour},
+		{"INGEST_WEATHER_INTERVAL", &cfg.weatherInterval, defaultWeatherInterval, time.Minute},
+		{"INGEST_WEATHER_LOOK_BACK", &cfg.weatherLookBack, defaultWeatherLookBack, 0},
+		{"INGEST_WEATHER_LOOK_AHEAD", &cfg.weatherLookAhead, defaultWeatherLookAhead, 24 * time.Hour},
 	}
 	for _, d := range durations {
 		*d.dst = d.fallback

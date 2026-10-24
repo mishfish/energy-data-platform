@@ -24,6 +24,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/shopspring/decimal"
 
 	"github.com/mishfish/energy-data-platform/internal/chdb"
 	"github.com/mishfish/energy-data-platform/internal/sink"
@@ -459,5 +460,51 @@ func TestSinkPicksUpTopicsCreatedAfterSubscribing(t *testing.T) {
 	}
 	if got := state(t, s.chDSN); !sameState(got) {
 		t.Errorf("state %v, want %v", got, wantState)
+	}
+}
+
+// Weather rows carry nullable decimals; a nil must arrive as NULL, not as 0 (ADR 0031).
+func TestClickHouseWriterWeatherNulls(t *testing.T) {
+	ctx := t.Context()
+	c, err := tcclickhouse.Run(ctx, "clickhouse/clickhouse-server:26.8.28.14",
+		tcclickhouse.WithDatabase("energy"), tcclickhouse.WithUsername("energy"), tcclickhouse.WithPassword("energy"))
+	testcontainers.CleanupContainer(t, c)
+	if err != nil {
+		t.Fatalf("clickhouse: %v", err)
+	}
+	dsn, err := c.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("dsn: %v", err)
+	}
+	if err := chdb.Migrate(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), dsn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	w, err := sink.NewClickHouseWriter(ctx, dsn)
+	if err != nil {
+		t.Fatalf("writer: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	temp := decimal.RequireFromString("-3.4")
+	hour := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	row := sink.Row{Table: "weather", LSN: 5, Columns: []any{
+		"10YNL----------L", "Rotterdam", hour, &temp, (*decimal.Decimal)(nil), (*decimal.Decimal)(nil), (*decimal.Decimal)(nil), hour,
+	}}
+	if err := w.Write(ctx, []sink.Row{row}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	opts, _ := clickhouse.ParseDSN(dsn)
+	conn, err := clickhouse.Open(opts)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	var got string
+	if err := conn.QueryRow(ctx, `SELECT concat(toString(temperature_2m_c), '|', toString(isNull(wind_speed_100m_ms))) FROM weather FINAL`).Scan(&got); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got != "-3.4|1" {
+		t.Errorf("stored %q, want -3.4 and a NULL wind speed", got)
 	}
 }

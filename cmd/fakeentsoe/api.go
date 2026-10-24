@@ -74,6 +74,14 @@ func (s *server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		item = "Actual Total Load [6.1.A]"
 		doc, found = s.model.loadDocument(zone, start, end, now)
+	case "A75":
+		zone = q.Get("in_Domain")
+		if zone == "" || q.Get("processType") != "A16" {
+			http.Error(w, "A75 is served for processType A16 with in_Domain only", http.StatusBadRequest)
+			return
+		}
+		item = "Actual Generation per Production Type [16.1.B&C]"
+		doc, found = s.model.generationDocument(zone, start, end, now)
 	default:
 		http.Error(w, fmt.Sprintf("documentType %q is not served by the fake API", docType), http.StatusBadRequest)
 		return

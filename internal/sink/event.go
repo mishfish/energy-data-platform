@@ -11,22 +11,17 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Row is one change of one key, ready for a ClickHouse CDC table. Both tables share this shape;
-// only the name of the amount column differs.
+// Row is one change of one key, ready for a ClickHouse CDC table: the table's own columns in insert
+// order, followed on insert by the version and the delete flag.
 type Row struct {
-	Table           string
-	BiddingZone     string
-	Sequence        uint8 // day-ahead price sequence (ADR 0029); always 0 for load
-	DeliveryStart   time.Time
-	ResolutionUS    int64
-	Amount          decimal.Decimal // price_eur_mwh or load_mw
-	SourceCreatedAt time.Time
-	LSN             uint64 // version in ReplacingMergeTree
-	IsDeleted       uint8
+	Table     string
+	Columns   []any
+	LSN       uint64 // version in ReplacingMergeTree
+	IsDeleted uint8
 }
 
-// envelope is the Debezium change event value. One struct serves both tables: the decoder leaves
-// the amount field of the other table empty.
+// envelope is the Debezium change event value. One image struct serves every table: the decoder
+// leaves the fields of the other tables empty.
 type envelope struct {
 	Before *rowImage `avro:"before"`
 	After  *rowImage `avro:"after"`
@@ -36,27 +31,101 @@ type envelope struct {
 	Op string `avro:"op"`
 }
 
-// rowImage is a row of day_ahead_price or actual_load as Debezium encodes it (ADR 0022):
-// timestamps as ISO strings, the resolution in microseconds, amounts as decimal strings.
+// rowImage is a row of any CDC table as Debezium encodes it (ADR 0022): timestamps as ISO strings,
+// intervals in microseconds, numerics as decimal strings.
 type rowImage struct {
 	BiddingZone     string `avro:"bidding_zone"`
-	Sequence        int32  `avro:"sequence"` // absent before ADR 0029 and for load: stays 0
 	DeliveryStart   string `avro:"delivery_start"`
 	Resolution      int64  `avro:"resolution"`
-	PriceEURMWh     string `avro:"price_eur_mwh"`
-	LoadMW          string `avro:"load_mw"`
 	SourceCreatedAt string `avro:"source_created_at"`
+
+	Sequence    int32  `avro:"sequence"` // day_ahead_price, absent before ADR 0029: stays 0
+	PriceEURMWh string `avro:"price_eur_mwh"`
+	LoadMW      string `avro:"load_mw"`
+	PSRType     string `avro:"psr_type"`  // generation
+	Direction   string `avro:"direction"` // generation
+	QuantityMW  string `avro:"quantity_mw"`
+
+	Point              string  `avro:"point"`      // weather
+	ValidFrom          string  `avro:"valid_from"` // weather
+	Temperature2mC     *string `avro:"temperature_2m_c"`
+	WindSpeed100mMS    *string `avro:"wind_speed_100m_ms"`
+	ShortwaveRadiation *string `avro:"shortwave_radiation_wm2"`
+	CloudCoverPct      *string `avro:"cloud_cover_pct"`
 }
 
-// table describes how a topic maps onto a ClickHouse table.
-type table struct {
-	name   string
-	amount func(*rowImage) string
+// tables maps the source table of a topic to the columns of its ClickHouse table, in the order of
+// insertSQL (clickhouse.go).
+var tables = map[string]func(*rowImage) ([]any, error){
+	"day_ahead_price": func(r *rowImage) ([]any, error) {
+		if r.Sequence < 0 || r.Sequence > 255 {
+			return nil, fmt.Errorf("sequence %d out of range", r.Sequence)
+		}
+		return slotColumns(r, r.PriceEURMWh, r.BiddingZone, uint8(r.Sequence))
+	},
+	"actual_load": func(r *rowImage) ([]any, error) {
+		return slotColumns(r, r.LoadMW, r.BiddingZone)
+	},
+	"generation": func(r *rowImage) ([]any, error) {
+		if r.PSRType == "" || r.Direction == "" {
+			return nil, errors.New("generation row without psr_type or direction")
+		}
+		return slotColumns(r, r.QuantityMW, r.BiddingZone, r.PSRType, r.Direction)
+	},
+	"weather": weatherColumns,
 }
 
-var tables = map[string]table{
-	"day_ahead_price": {name: "day_ahead_price", amount: func(r *rowImage) string { return r.PriceEURMWh }},
-	"actual_load":     {name: "actual_load", amount: func(r *rowImage) string { return r.LoadMW }},
+// slotColumns returns key, delivery_start, resolution_us, amount, source_created_at for the market
+// tables, which share everything but their key columns and amount.
+func slotColumns(r *rowImage, amount string, key ...any) ([]any, error) {
+	deliveryStart, err := time.Parse(time.RFC3339Nano, r.DeliveryStart)
+	if err != nil {
+		return nil, fmt.Errorf("delivery_start: %w", err)
+	}
+	createdAt, err := parseCreated(r)
+	if err != nil {
+		return nil, err
+	}
+	value, err := decimal.NewFromString(amount)
+	if err != nil {
+		return nil, fmt.Errorf("amount: %w", err)
+	}
+	return append(key, deliveryStart.UTC(), r.Resolution, value, createdAt), nil
+}
+
+func weatherColumns(r *rowImage) ([]any, error) {
+	if r.Point == "" {
+		return nil, errors.New("weather row without point")
+	}
+	validFrom, err := time.Parse(time.RFC3339Nano, r.ValidFrom)
+	if err != nil {
+		return nil, fmt.Errorf("valid_from: %w", err)
+	}
+	createdAt, err := parseCreated(r)
+	if err != nil {
+		return nil, err
+	}
+	cols := []any{r.BiddingZone, r.Point, validFrom.UTC()}
+	for _, v := range []*string{r.Temperature2mC, r.WindSpeed100mMS, r.ShortwaveRadiation, r.CloudCoverPct} {
+		if v == nil {
+			cols = append(cols, (*decimal.Decimal)(nil))
+			continue
+		}
+		d, err := decimal.NewFromString(*v)
+		if err != nil {
+			return nil, fmt.Errorf("weather value %q: %w", *v, err)
+		}
+		cols = append(cols, &d)
+	}
+	return append(cols, createdAt), nil
+}
+
+func parseCreated(r *rowImage) (time.Time, error) {
+	createdAt, err := time.Parse(time.RFC3339Nano, r.SourceCreatedAt)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("source_created_at: %w", err)
+	}
+	return createdAt.UTC(), nil
 }
 
 // errSkip marks an event that carries no row, such as the tombstone Debezium sends after a delete.
@@ -66,7 +135,7 @@ var errSkip = errors.New("event has no row")
 // updates write the after image; a delete writes the before image with is_deleted set, which
 // REPLICA IDENTITY FULL makes complete (ADR 0022).
 func toRow(tableName string, ev envelope) (Row, error) {
-	t, ok := tables[tableName]
+	columns, ok := tables[tableName]
 	if !ok {
 		return Row{}, fmt.Errorf("no ClickHouse table for %q", tableName)
 	}
@@ -88,30 +157,9 @@ func toRow(tableName string, ev envelope) (Row, error) {
 		return Row{}, fmt.Errorf("operation %q without a row image", ev.Op)
 	}
 
-	deliveryStart, err := time.Parse(time.RFC3339Nano, image.DeliveryStart)
+	cols, err := columns(image)
 	if err != nil {
-		return Row{}, fmt.Errorf("delivery_start: %w", err)
+		return Row{}, err
 	}
-	createdAt, err := time.Parse(time.RFC3339Nano, image.SourceCreatedAt)
-	if err != nil {
-		return Row{}, fmt.Errorf("source_created_at: %w", err)
-	}
-	amount, err := decimal.NewFromString(t.amount(image))
-	if err != nil {
-		return Row{}, fmt.Errorf("amount: %w", err)
-	}
-	if image.Sequence < 0 || image.Sequence > 255 {
-		return Row{}, fmt.Errorf("sequence %d out of range", image.Sequence)
-	}
-	return Row{
-		Table:           t.name,
-		BiddingZone:     image.BiddingZone,
-		Sequence:        uint8(image.Sequence),
-		DeliveryStart:   deliveryStart.UTC(),
-		ResolutionUS:    image.Resolution,
-		Amount:          amount,
-		SourceCreatedAt: createdAt.UTC(),
-		LSN:             uint64(*ev.Source.LSN),
-		IsDeleted:       deleted,
-	}, nil
+	return Row{Table: tableName, Columns: cols, LSN: uint64(*ev.Source.LSN), IsDeleted: deleted}, nil
 }

@@ -314,6 +314,7 @@ func TestJobRunInitialisesSeries(t *testing.T) {
 			"ingest_fetch_duration_seconds": 4,
 			"ingest_rows_upserted_total":    1,
 			"ingest_job_info":               1,
+			"ingest_job_interval_seconds":   1,
 		}
 		if len(got) != len(want) {
 			t.Errorf("got metric families %v, want %v", got, want)

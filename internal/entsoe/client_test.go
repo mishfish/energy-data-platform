@@ -147,6 +147,45 @@ func TestClientActualLoadRequest(t *testing.T) {
 	}
 }
 
+func TestClientGenerationRequest(t *testing.T) {
+	var got *http.Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r
+		_, _ = w.Write([]byte(genDocument(genSeries("in", "B19", "A01",
+			hourPeriod("2026-10-01T22:00Z", qty("1", "1"), qty("2", "2"), qty("3", "3"), qty("4", "4"))))))
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL+"/api", testToken)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	gen, err := client.Generation(context.Background(), zoneNL, windowStart, windowEnd)
+	if err != nil {
+		t.Fatalf("Generation: %v", err)
+	}
+	if len(gen) != 4 {
+		t.Errorf("got %d values, want 4", len(gen))
+	}
+	want := map[string]string{
+		"securityToken": testToken,
+		"documentType":  "A75",
+		"processType":   "A16",
+		"in_Domain":     zoneNL,
+		"periodStart":   "202610012200",
+		"periodEnd":     "202610022200",
+	}
+	query := got.URL.Query()
+	if len(query) != len(want) {
+		t.Errorf("got %d query parameters, want %d: %v", len(query), len(want), query)
+	}
+	for name, value := range want {
+		if query.Get(name) != value {
+			t.Errorf("query parameter %s = %q, want %q", name, query.Get(name), value)
+		}
+	}
+}
+
 func TestClientDayAheadPricesRetries(t *testing.T) {
 	prices := readFixture(t, "a44_nl_pt15m.xml")
 	noData := readFixture(t, "acknowledgement_no_data.xml")

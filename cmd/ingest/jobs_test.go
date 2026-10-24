@@ -10,6 +10,7 @@ import (
 
 	"github.com/mishfish/energy-data-platform/internal/entsoe"
 	"github.com/mishfish/energy-data-platform/internal/ingest"
+	"github.com/mishfish/energy-data-platform/internal/openmeteo"
 )
 
 func TestNewJobsSpreadsStarts(t *testing.T) {
@@ -23,12 +24,14 @@ func TestNewJobsSpreadsStarts(t *testing.T) {
 	cfg := config{
 		dayAheadZones: zones("NL,BE,DE_LU"), dayAheadInterval: 15 * time.Minute,
 		actualLoadZones: zones("NL"), actualLoadInterval: 15 * time.Minute,
+		generationZones: zones("DE_LU"), generationInterval: 15 * time.Minute,
+		weatherZones: zones("NL"), weatherInterval: time.Hour,
 	}
 	metrics, err := ingest.NewMetrics(prometheus.NewRegistry())
 	if err != nil {
 		t.Fatalf("NewMetrics: %v", err)
 	}
-	jobs := newJobs(cfg, nil, nil, metrics, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	jobs := newJobs(cfg, nil, nil, nil, metrics, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	type got struct {
 		dataset, zone string
@@ -41,13 +44,20 @@ func TestNewJobsSpreadsStarts(t *testing.T) {
 			all = append(all, got{j.Dataset, j.Zone.Name, j.StartDelay})
 		case *ingest.Job[entsoe.ActualLoad]:
 			all = append(all, got{j.Dataset, j.Zone.Name, j.StartDelay})
+		case *ingest.Job[entsoe.Generation]:
+			all = append(all, got{j.Dataset, j.Zone.Name, j.StartDelay})
+		case *ingest.Job[openmeteo.Weather]:
+			all = append(all, got{j.Dataset, j.Zone.Name, j.StartDelay})
 		}
 	}
 	want := []got{
+		// Six jobs over the shortest interval (15 minutes), the hourly weather job included.
 		{ingest.DatasetDayAheadPrice, "NL", 0},
-		{ingest.DatasetDayAheadPrice, "BE", 225 * time.Second},
-		{ingest.DatasetDayAheadPrice, "DE_LU", 450 * time.Second},
-		{ingest.DatasetActualLoad, "NL", 675 * time.Second},
+		{ingest.DatasetDayAheadPrice, "BE", 150 * time.Second},
+		{ingest.DatasetDayAheadPrice, "DE_LU", 300 * time.Second},
+		{ingest.DatasetActualLoad, "NL", 450 * time.Second},
+		{ingest.DatasetGeneration, "DE_LU", 600 * time.Second},
+		{ingest.DatasetWeather, "NL", 750 * time.Second},
 	}
 	if len(all) != len(want) {
 		t.Fatalf("got %d jobs %v, want %v", len(all), all, want)

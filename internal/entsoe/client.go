@@ -124,6 +124,28 @@ func (c *Client) ActualLoad(ctx context.Context, zone string, start, end time.Ti
 	return loads, nil
 }
 
+// Generation fetches the realised generation per production type (A75, process type A16) of a
+// bidding zone for the interval [start, end). When the platform has no data for the interval, the
+// error matches ErrNoData.
+func (c *Client) Generation(ctx context.Context, zone string, start, end time.Time) ([]Generation, error) {
+	query := url.Values{
+		"documentType": {documentTypeGeneration},
+		"processType":  {processTypeRealised},
+		"in_Domain":    {zone},
+		"periodStart":  {start.UTC().Format(periodLayout)},
+		"periodEnd":    {end.UTC().Format(periodLayout)},
+	}
+	body, err := c.get(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("fetch generation: %w", err)
+	}
+	gen, err := ParseGeneration(bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("parse generation: %w", err)
+	}
+	return gen, nil
+}
+
 // get performs the request until it succeeds, fails permanently or runs out of attempts.
 func (c *Client) get(ctx context.Context, query url.Values) ([]byte, error) {
 	for attempt := 1; ; attempt++ {

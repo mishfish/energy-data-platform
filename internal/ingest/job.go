@@ -14,6 +14,8 @@ import (
 const (
 	DatasetDayAheadPrice = "day_ahead_price"
 	DatasetActualLoad    = "actual_load"
+	DatasetGeneration    = "generation"
+	DatasetWeather       = "weather"
 )
 
 // Results of one run, used as the "result" metric label.
@@ -49,7 +51,7 @@ type Job[T any] struct {
 // Run fetches once after StartDelay and then on every tick until ctx is cancelled. Runs never
 // overlap: a run that outlasts the interval delays the next one, and the ticks it missed are dropped.
 func (j *Job[T]) Run(ctx context.Context) {
-	j.Metrics.initJob(j.Dataset, j.Zone.Name)
+	j.Metrics.initJob(j.Dataset, j.Zone.Name, j.Interval)
 	if j.StartDelay > 0 {
 		timer := time.NewTimer(j.StartDelay)
 		select {

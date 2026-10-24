@@ -32,7 +32,7 @@ func TestLoadConfig(t *testing.T) {
 		if cfg.httpAddr != ":8080" || cfg.groupID != "energy-clickhouse-sink" || cfg.batchSize != 10000 || cfg.flushInterval != 2*time.Second {
 			t.Errorf("got %+v", cfg)
 		}
-		if want := []string{"energy.public.day_ahead_price", "energy.public.actual_load"}; !slices.Equal(cfg.topics, want) {
+		if want := []string{"energy.public.day_ahead_price", "energy.public.actual_load", "energy.public.generation", "energy.public.weather"}; !slices.Equal(cfg.topics, want) {
 			t.Errorf("topics %v, want %v", cfg.topics, want)
 		}
 	})

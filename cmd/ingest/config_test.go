@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mishfish/energy-data-platform/internal/entsoe"
+	"github.com/mishfish/energy-data-platform/internal/openmeteo"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -31,12 +32,13 @@ func TestLoadConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("loadConfig: %v", err)
 		}
-		cfg.dayAheadZones, cfg.actualLoadZones = nil, nil // checked below
+		cfg.dayAheadZones, cfg.actualLoadZones, cfg.generationZones, cfg.weatherZones = nil, nil, nil, nil // checked below
 		want := config{
 			httpAddr:          ":8080",
 			databaseURL:       required["DATABASE_URL"],
 			entsoeBaseURL:     entsoe.DefaultBaseURL,
 			entsoeToken:       "token",
+			openMeteoBaseURL:  openmeteo.DefaultBaseURL,
 			dayAheadInterval:  15 * time.Minute,
 			dayAheadLookBack:  24 * time.Hour,
 			dayAheadLookAhead: 48 * time.Hour,
@@ -44,6 +46,14 @@ func TestLoadConfig(t *testing.T) {
 			actualLoadInterval:  15 * time.Minute,
 			actualLoadLookBack:  7 * 24 * time.Hour,
 			actualLoadLookAhead: 24 * time.Hour,
+
+			generationInterval:  15 * time.Minute,
+			generationLookBack:  7 * 24 * time.Hour,
+			generationLookAhead: 24 * time.Hour,
+
+			weatherInterval:  time.Hour,
+			weatherLookBack:  7 * 24 * time.Hour,
+			weatherLookAhead: 48 * time.Hour,
 		}
 		if !reflect.DeepEqual(cfg, want) {
 			t.Errorf("got %+v, want %+v", cfg, want)
@@ -56,8 +66,12 @@ func TestLoadConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("loadConfig: %v", err)
 		}
-		if len(cfg.dayAheadZones) != 45 || len(cfg.actualLoadZones) != 46 {
-			t.Errorf("got %d price zones and %d load zones, want 45 and 46", len(cfg.dayAheadZones), len(cfg.actualLoadZones))
+		if len(cfg.weatherZones) != 47 {
+			t.Errorf("got %d weather zones, want 47", len(cfg.weatherZones))
+		}
+		if len(cfg.dayAheadZones) != 45 || len(cfg.actualLoadZones) != 46 || len(cfg.generationZones) != 47 {
+			t.Errorf("got %d price, %d load and %d generation zones, want 45, 46 and 47",
+				len(cfg.dayAheadZones), len(cfg.actualLoadZones), len(cfg.generationZones))
 		}
 		for _, z := range cfg.dayAheadZones {
 			if z.Name == "GB" || z.Name == "UA_IPS" {
@@ -107,6 +121,10 @@ func TestLoadConfig(t *testing.T) {
 		{"negative load look-back", map[string]string{"INGEST_ACTUAL_LOAD_LOOK_BACK": "-1h"}, "INGEST_ACTUAL_LOAD_LOOK_BACK"},
 		{"unknown price zone", map[string]string{"INGEST_DAY_AHEAD_ZONES": "NL,XX"}, "INGEST_DAY_AHEAD_ZONES"},
 		{"duplicate load zone", map[string]string{"INGEST_ACTUAL_LOAD_ZONES": "NL,NL"}, "INGEST_ACTUAL_LOAD_ZONES"},
+		{"unknown generation zone", map[string]string{"INGEST_GENERATION_ZONES": "XX"}, "INGEST_GENERATION_ZONES"},
+		{"zero generation interval", map[string]string{"INGEST_GENERATION_INTERVAL": "0s"}, "INGEST_GENERATION_INTERVAL"},
+		{"weather zone without points", map[string]string{"INGEST_WEATHER_ZONES": "NL,GB"}, "no weather points"},
+		{"weather look-ahead under a day", map[string]string{"INGEST_WEATHER_LOOK_AHEAD": "2h"}, "INGEST_WEATHER_LOOK_AHEAD"},
 	}
 	for _, tt := range invalid {
 		t.Run(tt.name, func(t *testing.T) {

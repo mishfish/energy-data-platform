@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/mishfish/energy-data-platform/internal/fixedpoint"
 )
 
 const (
@@ -31,7 +33,9 @@ type glDocument struct {
 }
 
 type glTimeSeries struct {
-	OutBiddingZone string     `xml:"outBiddingZone_Domain.mRID"`
+	InBiddingZone  string     `xml:"inBiddingZone_Domain.mRID"`  // A75: generation
+	OutBiddingZone string     `xml:"outBiddingZone_Domain.mRID"` // A65: load; A75: consumption
+	PSRType        string     `xml:"MktPSRType>psrType"`         // A75 only
 	QuantityUnit   string     `xml:"quantity_Measure_Unit.name"`
 	CurveType      string     `xml:"curveType"`
 	Periods        []glPeriod `xml:"Period"`
@@ -56,23 +60,32 @@ type glPoint struct {
 // An acknowledgement is returned as *AcknowledgementError; use errors.Is(err, ErrNoData) to detect the
 // "no data" case.
 func ParseActualLoad(r io.Reader) ([]ActualLoad, error) {
+	doc, err := decodeGL(r)
+	if err != nil {
+		return nil, err
+	}
+	return actualLoad(doc)
+}
+
+// decodeGL reads a GL_MarketDocument (A65, A75), or returns the acknowledgement sent instead.
+func decodeGL(r io.Reader) (glDocument, error) {
 	dec := xml.NewDecoder(r)
 	root, err := rootElement(dec)
 	if err != nil {
-		return nil, err
+		return glDocument{}, err
 	}
 
 	switch root.Name.Local {
 	case "GL_MarketDocument":
 		var doc glDocument
 		if err := dec.DecodeElement(&doc, &root); err != nil {
-			return nil, fmt.Errorf("decode load document: %w", err)
+			return glDocument{}, fmt.Errorf("decode load document: %w", err)
 		}
-		return actualLoad(doc)
+		return doc, nil
 	case "Acknowledgement_MarketDocument":
-		return nil, decodeAcknowledgement(dec, root)
+		return glDocument{}, decodeAcknowledgement(dec, root)
 	default:
-		return nil, fmt.Errorf("unexpected root element %q", root.Name.Local)
+		return glDocument{}, fmt.Errorf("unexpected root element %q", root.Name.Local)
 	}
 }
 
@@ -104,13 +117,18 @@ func actualLoad(doc glDocument) ([]ActualLoad, error) {
 			return nil, fmt.Errorf("time series %d: %w", i+1, err)
 		}
 		for _, p := range ts.Periods {
-			expanded, err := expandLoadPeriod(p, ts.CurveType)
+			expanded, err := expandQuantityPeriod(p, ts.CurveType)
 			if err != nil {
 				return nil, fmt.Errorf("time series %d, period %s: %w", i+1, p.Start, err)
 			}
-			for _, l := range expanded {
-				l.BiddingZone = ts.OutBiddingZone
-				l.SourceCreatedAt = createdAt
+			for _, q := range expanded {
+				l := ActualLoad{
+					BiddingZone:     ts.OutBiddingZone,
+					DeliveryStart:   q.start,
+					Resolution:      q.resolution,
+					QuantityW:       q.watts,
+					SourceCreatedAt: createdAt,
+				}
 				// Two values for one table key in a single document would make the upsert ambiguous.
 				k := key{l.BiddingZone, l.DeliveryStart, l.Resolution}
 				if _, dup := seen[k]; dup {
@@ -139,9 +157,16 @@ func checkLoadTimeSeries(ts glTimeSeries) error {
 	return nil
 }
 
-// expandLoadPeriod returns one value per position of the period, with only the time, resolution and
-// quantity fields set.
-func expandLoadPeriod(p glPeriod, curveType string) ([]ActualLoad, error) {
+// quantitySlot is one position of a GL period: a market time unit and its quantity in watts.
+type quantitySlot struct {
+	start      time.Time
+	resolution time.Duration
+	watts      int64
+}
+
+// expandQuantityPeriod returns one slot per position of a GL period (A65, A75), with the positions
+// omitted by curve type A03 filled in from the previous one.
+func expandQuantityPeriod(p glPeriod, curveType string) ([]quantitySlot, error) {
 	start, err := parseTime(p.Start)
 	if err != nil {
 		return nil, fmt.Errorf("interval start: %w", err)
@@ -160,7 +185,7 @@ func expandLoadPeriod(p glPeriod, curveType string) ([]ActualLoad, error) {
 	}
 	slots := int(span / resolution)
 
-	loads := make([]ActualLoad, 0, slots)
+	out := make([]quantitySlot, 0, slots)
 	var watts int64
 	next := 0 // index of the first point not consumed yet
 	for pos := 1; pos <= slots; pos++ {
@@ -174,16 +199,12 @@ func expandLoadPeriod(p glPeriod, curveType string) ([]ActualLoad, error) {
 		case pos == 1 || curveType != curveVariableSized:
 			return nil, fmt.Errorf("missing position %d", pos)
 		}
-		loads = append(loads, ActualLoad{
-			DeliveryStart: start.Add(time.Duration(pos-1) * resolution),
-			Resolution:    resolution,
-			QuantityW:     watts,
-		})
+		out = append(out, quantitySlot{start: start.Add(time.Duration(pos-1) * resolution), resolution: resolution, watts: watts})
 	}
 	if next < len(p.Points) {
 		return nil, fmt.Errorf("point position %d is out of order or outside 1..%d", p.Points[next].Position, slots)
 	}
-	return loads, nil
+	return out, nil
 }
 
 // Scale of load quantities: numeric(15, 6) in MW, i.e. watts (ADR 0029).
@@ -196,7 +217,7 @@ const (
 // through a float. Quantities that do not fit numeric(15, 6) or are negative are rejected: total
 // load cannot be negative, so a sign means the source format changed.
 func parseWatts(s string) (int64, error) {
-	v, ok := parseFixed(s, loadDecimals, loadMaxWhole, false)
+	v, ok := fixedpoint.Parse(s, loadDecimals, loadMaxWhole, false)
 	if !ok {
 		return 0, fmt.Errorf("invalid quantity %q", s)
 	}

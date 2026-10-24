@@ -1,6 +1,7 @@
 // Command ingest pulls ENTSO-E and Open-Meteo data into Postgres.
-// It fetches ENTSO-E day-ahead prices and actual load for the configured bidding zones on a fixed
-// interval, one job per zone and dataset (ADR 0029), and serves health, readiness and metrics.
+// It fetches ENTSO-E day-ahead prices, actual load and generation, and Open-Meteo weather, for the
+// configured bidding zones on a fixed interval, one job per zone and dataset (ADR 0029), and serves
+// health, readiness and metrics.
 //
 // Usage:
 //
@@ -27,6 +28,7 @@ import (
 	"github.com/mishfish/energy-data-platform/internal/db"
 	"github.com/mishfish/energy-data-platform/internal/entsoe"
 	"github.com/mishfish/energy-data-platform/internal/ingest"
+	"github.com/mishfish/energy-data-platform/internal/openmeteo"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -84,7 +86,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	jobs := newJobs(cfg, client, pool, metrics, logger)
+	weatherClient, err := openmeteo.NewClient(cfg.openMeteoBaseURL)
+	if err != nil {
+		return fmt.Errorf("open-meteo client: %w", err)
+	}
+	jobs := newJobs(cfg, client, weatherClient, pool, metrics, logger)
 
 	var ready atomic.Bool
 	srv := &http.Server{
@@ -108,7 +114,8 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		jobsDone.Go(func() { job.Run(jobCtx) })
 	}
 	logger.Info("ingestion jobs started", "jobs", len(jobs),
-		"day_ahead_zones", len(cfg.dayAheadZones), "actual_load_zones", len(cfg.actualLoadZones))
+		"day_ahead_zones", len(cfg.dayAheadZones), "actual_load_zones", len(cfg.actualLoadZones),
+		"generation_zones", len(cfg.generationZones), "weather_zones", len(cfg.weatherZones))
 	ready.Store(true)
 
 	select {
@@ -137,20 +144,30 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 type runner interface{ Run(context.Context) }
 
-// newJobs returns one job per zone and dataset. Their first runs are spread evenly over the
-// interval, so a start does not send every request to the API at once (ADR 0029).
-func newJobs(cfg config, client *entsoe.Client, pool *pgxpool.Pool, metrics *ingest.Metrics, logger *slog.Logger) []runner {
+// newJobs returns one job per zone and dataset. Their first runs are spread evenly over the shortest
+// interval, so a start does not send every request to the APIs at once (ADR 0029).
+func newJobs(cfg config, client *entsoe.Client, weather *openmeteo.Client, pool *pgxpool.Pool, metrics *ingest.Metrics, logger *slog.Logger) []runner {
 	storePrices := func(ctx context.Context, prices []entsoe.DayAheadPrice) (int64, error) {
 		return db.UpsertDayAheadPrices(ctx, pool, prices)
 	}
 	storeLoad := func(ctx context.Context, loads []entsoe.ActualLoad) (int64, error) {
 		return db.UpsertActualLoad(ctx, pool, loads)
 	}
+	storeGeneration := func(ctx context.Context, values []entsoe.Generation) (int64, error) {
+		return db.UpsertGeneration(ctx, pool, values)
+	}
 
-	total := len(cfg.dayAheadZones) + len(cfg.actualLoadZones)
+	storeWeather := func(ctx context.Context, rows []openmeteo.Weather) (int64, error) {
+		return db.UpsertWeather(ctx, pool, rows)
+	}
+
+	total := len(cfg.dayAheadZones) + len(cfg.actualLoadZones) + len(cfg.generationZones) + len(cfg.weatherZones)
 	jobs := make([]runner, 0, total)
-	delay := func(interval time.Duration) time.Duration {
-		return time.Duration(len(jobs)) * interval / time.Duration(total)
+	// First runs are spread over the shortest interval, so even hourly jobs start within it and the
+	// never-succeeded alert does not fire on a normal restart.
+	spread := min(cfg.dayAheadInterval, cfg.actualLoadInterval, cfg.generationInterval, cfg.weatherInterval)
+	delay := func(time.Duration) time.Duration {
+		return time.Duration(len(jobs)) * spread / time.Duration(total)
 	}
 	for _, zone := range cfg.dayAheadZones {
 		jobs = append(jobs, &ingest.Job[entsoe.DayAheadPrice]{
@@ -166,6 +183,25 @@ func newJobs(cfg config, client *entsoe.Client, pool *pgxpool.Pool, metrics *ing
 			Metrics: metrics, Logger: logger, Zone: zone,
 			Interval: cfg.actualLoadInterval, StartDelay: delay(cfg.actualLoadInterval),
 			LookBack: cfg.actualLoadLookBack, LookAhead: cfg.actualLoadLookAhead,
+		})
+	}
+	for _, zone := range cfg.generationZones {
+		jobs = append(jobs, &ingest.Job[entsoe.Generation]{
+			Dataset: ingest.DatasetGeneration, Fetch: client.Generation, Store: storeGeneration,
+			Metrics: metrics, Logger: logger, Zone: zone,
+			Interval: cfg.generationInterval, StartDelay: delay(cfg.generationInterval),
+			LookBack: cfg.generationLookBack, LookAhead: cfg.generationLookAhead,
+		})
+	}
+	for _, zone := range cfg.weatherZones {
+		points := openmeteo.ZonePoints[zone.Name]
+		jobs = append(jobs, &ingest.Job[openmeteo.Weather]{
+			Dataset: ingest.DatasetWeather, Store: storeWeather, Metrics: metrics, Logger: logger, Zone: zone,
+			Fetch: func(ctx context.Context, eic string, start, end time.Time) ([]openmeteo.Weather, error) {
+				return weather.Fetch(ctx, eic, points, start, end)
+			},
+			Interval: cfg.weatherInterval, StartDelay: delay(cfg.weatherInterval),
+			LookBack: cfg.weatherLookBack, LookAhead: cfg.weatherLookAhead,
 		})
 	}
 	return jobs

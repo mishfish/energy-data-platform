@@ -13,6 +13,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/mishfish/energy-data-platform/internal/chdb"
+	"github.com/mishfish/energy-data-platform/internal/entsoe"
 )
 
 // startClickHouse runs the same ClickHouse version as the compose stack and returns its DSN.
@@ -120,7 +121,7 @@ func TestCDCTablesExist(t *testing.T) {
 	db := migrated(t)
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT name, engine FROM system.tables
-		WHERE database = currentDatabase() AND name IN ('day_ahead_price', 'actual_load')
+		WHERE database = currentDatabase() AND name IN ('day_ahead_price', 'actual_load', 'generation', 'weather')
 		ORDER BY name`)
 	if err != nil {
 		t.Fatalf("query: %v", err)
@@ -137,7 +138,7 @@ func TestCDCTablesExist(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
 	}
-	for _, table := range []string{"actual_load", "day_ahead_price"} {
+	for _, table := range []string{"actual_load", "day_ahead_price", "generation", "weather"} {
 		if got[table] != "ReplacingMergeTree" {
 			t.Errorf("table %s: engine %q, want ReplacingMergeTree", table, got[table])
 		}
@@ -164,5 +165,34 @@ func TestPriceSequencesAreSeparateKeys(t *testing.T) {
 	}
 	if rows != 3 || prices != "174.31,186.44,173.869995" {
 		t.Errorf("FINAL has %d rows %s, want 3 rows 174.31,186.44,173.869995", rows, prices)
+	}
+}
+
+// The ClickHouse copy of the production types must equal the list the parser accepts.
+func TestPSRTypesMatchParser(t *testing.T) {
+	db := migrated(t)
+	rows, err := db.QueryContext(t.Context(), `SELECT code, name FROM psr_type`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	got := map[string]string{}
+	for rows.Next() {
+		var code, name string
+		if err := rows.Scan(&code, &name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[code] = name
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if len(got) != len(entsoe.PSRTypes) {
+		t.Errorf("psr_type has %d codes, entsoe.PSRTypes %d", len(got), len(entsoe.PSRTypes))
+	}
+	for code, name := range entsoe.PSRTypes {
+		if got[code] != name {
+			t.Errorf("psr_type %s = %q, want %q", code, got[code], name)
+		}
 	}
 }

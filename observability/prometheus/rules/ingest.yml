@@ -1,19 +1,22 @@
 groups:
   - name: ingest
     rules:
-      # Freshness of each dataset and zone: time since the last run that fetched data and stored it.
-      # last_over_time keeps the last known value for an hour after scrapes stop, so the alert also
-      # fires when the ingest process itself is down, not only when its runs fail.
+      # Freshness of each dataset and zone: time since the last run that fetched data and stored it,
+      # against three missed runs of that job's own interval (15 minutes for the market data, an hour
+      # for weather, ADR 0031). last_over_time keeps the last known values for 4 hours after scrapes
+      # stop, so the alert also fires when the ingest process itself is down.
       - alert: IngestStale
-        expr: time() - max by (dataset, zone) (last_over_time(ingest_last_success_timestamp_seconds[1h])) > 45 * 60
+        expr: >-
+          time() - max by (dataset, zone) (last_over_time(ingest_last_success_timestamp_seconds[4h]))
+          > 3 * max by (dataset, zone) (last_over_time(ingest_job_interval_seconds[4h]))
         labels:
           severity: critical
         annotations:
           summary: "No successful {{ $labels.dataset }} fetch for {{ $labels.zone }} for {{ $value | humanizeDuration }}"
           description: >-
-            The ingest service has not fetched and stored {{ $labels.dataset }} for {{ $labels.zone }} for more
-            than 45 minutes (three missed runs at the default 15-minute interval). Check ingest_fetches_total by
-            result and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
+            The ingest service has not fetched and stored {{ $labels.dataset }} for {{ $labels.zone }} for three of
+            its run intervals. Check ingest_fetches_total by result and the ingest logs: fetch_error points at
+            the source API or the token, store_error at Postgres.
 
       # A configured job (ingest_job_info, ADR 0029) without a success on record. This covers zones that
       # the source has stopped serving as well as a fresh start that never got through.
@@ -32,7 +35,7 @@ groups:
             INGEST_*_ZONES list.
 
       # Without scrapes neither rule above has anything to look at for long: job_info disappears with the
-      # process, and the last success ages out of last_over_time after an hour.
+      # process, and the last success ages out of last_over_time after 4 hours.
       - alert: IngestDown
         expr: up{job="ingest"} == 0
         for: 5m

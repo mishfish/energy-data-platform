@@ -117,7 +117,7 @@ func TestMigrateCDCPublication(t *testing.T) {
 		t.Fatalf("rows: %v", err)
 	}
 
-	want := map[string]string{"actual_load": "f", "day_ahead_price": "f"} // f = FULL
+	want := map[string]string{"actual_load": "f", "day_ahead_price": "f", "generation": "f", "weather": "f"} // f = FULL
 	if len(got) != len(want) {
 		t.Fatalf("publication energy_cdc has tables %v, want %v", got, want)
 	}

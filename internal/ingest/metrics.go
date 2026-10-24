@@ -15,6 +15,7 @@ type Metrics struct {
 	rows        *prometheus.CounterVec
 	lastSuccess *prometheus.GaugeVec
 	jobInfo     *prometheus.GaugeVec
+	jobInterval *prometheus.GaugeVec
 }
 
 // NewMetrics registers the ingestion metrics with reg.
@@ -42,8 +43,12 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "ingest_job_info",
 			Help: "1 for every configured job. The freshness alerts compare it with ingest_last_success_timestamp_seconds.",
 		}, []string{"dataset", "zone"}),
+		jobInterval: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "ingest_job_interval_seconds",
+			Help: "Configured run interval of every job; the freshness alert fires after three missed runs.",
+		}, []string{"dataset", "zone"}),
 	}
-	for _, c := range []prometheus.Collector{m.runs, m.duration, m.rows, m.lastSuccess, m.jobInfo} {
+	for _, c := range []prometheus.Collector{m.runs, m.duration, m.rows, m.lastSuccess, m.jobInfo, m.jobInterval} {
 		if err := reg.Register(c); err != nil {
 			return nil, fmt.Errorf("register ingestion metrics: %w", err)
 		}
@@ -54,8 +59,9 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 // initJob registers a job and creates its per-result series at zero. Without that a series first
 // appears with value 1, and increase() over the range that contains its first run would miss that
 // run. The last-success gauge is left absent on purpose: zero would read as "succeeded in 1970".
-func (m *Metrics) initJob(dataset, zone string) {
+func (m *Metrics) initJob(dataset, zone string, interval time.Duration) {
 	m.jobInfo.WithLabelValues(dataset, zone).Set(1)
+	m.jobInterval.WithLabelValues(dataset, zone).Set(interval.Seconds())
 	for _, result := range []string{resultSuccess, resultNoData, resultFetchError, resultStoreError} {
 		m.runs.WithLabelValues(dataset, zone, result)
 		m.duration.WithLabelValues(dataset, result)

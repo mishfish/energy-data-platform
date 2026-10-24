@@ -11,7 +11,7 @@ import (
 const (
 	defaultHTTPAddr      = ":8080"
 	defaultGroupID       = "energy-clickhouse-sink"
-	defaultTopics        = "energy.public.day_ahead_price,energy.public.actual_load"
+	defaultTopics        = "energy.public.day_ahead_price,energy.public.actual_load,energy.public.generation,energy.public.weather"
 	defaultBatchSize     = 10000
 	defaultFlushInterval = 2 * time.Second
 	retryBase            = time.Second

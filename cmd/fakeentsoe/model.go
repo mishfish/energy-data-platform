@@ -140,3 +140,43 @@ func minTime(a, b time.Time) time.Time {
 	}
 	return b
 }
+
+// generationTypes returns the production types a zone reports, a fixed subset per zone. Pumped
+// storage (B10) comes with a consumption series as well, as on the real platform.
+func generationTypes(zone string) []string {
+	r := seed("generation-types", zone, time.Unix(0, 0), 0)
+	types := []string{"B04", "B16", "B19"} // gas, solar, wind onshore everywhere
+	for _, t := range []string{"B01", "B05", "B10", "B11", "B14", "B18", "B20"} {
+		if r.IntN(2) == 0 {
+			types = append(types, t)
+		}
+	}
+	return types
+}
+
+// generationKW returns generation (or, for consumption, pumping) of a production type in kW.
+func (m model) generationKW(zone, psrType, direction string, slot, now time.Time) int64 {
+	stream := "generation-" + psrType + "-" + direction
+	r := seed(stream, zone, slot, 0)
+	h := localHour(slot)
+	var mw float64
+	switch {
+	case psrType == "B16":
+		mw = 4000 * bump(h, 13, 3) * (0.7 + 0.3*r.Float64())
+	case psrType == "B19" || psrType == "B18":
+		mw = 1500 + 1200*seed(stream, zone, slot.Truncate(6*time.Hour), 0).Float64() + 100*r.Float64()
+	case psrType == "B10" && direction == "consumption":
+		mw = 600 * bump(h, 3, 2.5)
+	case psrType == "B10":
+		mw = 700 * bump(h, 19, 2)
+	case psrType == "B14":
+		mw = 2400 + 20*r.Float64()
+	default:
+		mw = 300 + 900*bump(h, 18, 4) + 50*r.Float64()
+	}
+	kw := int64(mw * 1000)
+	if rev := m.lastRevision(stream, zone, slot, loadPublished(slot), now); rev >= 0 {
+		kw += seed(stream+"-revision", zone, slot, rev).Int64N(100_001) - 50_000
+	}
+	return max(kw, 0)
+}

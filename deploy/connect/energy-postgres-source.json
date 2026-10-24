@@ -12,7 +12,7 @@
   "publication.name": "energy_cdc",
   "publication.autocreate.mode": "disabled",
   "slot.name": "debezium_energy",
-  "table.include.list": "public.day_ahead_price,public.actual_load",
+  "table.include.list": "public.day_ahead_price,public.actual_load,public.generation,public.weather",
   "snapshot.mode": "initial",
   "heartbeat.interval.ms": "10000",
 

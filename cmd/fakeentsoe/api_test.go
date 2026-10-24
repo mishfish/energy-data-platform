@@ -115,6 +115,30 @@ func TestLoadFollowsPublicationLag(t *testing.T) {
 	}
 }
 
+func TestGenerationParsesWithTheRealClient(t *testing.T) {
+	now := mustTime(t, "2026-10-24T14:07:00Z")
+	client, _ := fakeAt(t, noRevisions, &now)
+	gen, err := client.Generation(t.Context(), zoneNL, mustTime(t, "2026-10-23T00:00:00Z"), mustTime(t, "2026-10-25T00:00:00Z"))
+	if err != nil {
+		t.Fatalf("Generation: %v", err)
+	}
+	slots := map[string]int{}
+	for _, g := range gen {
+		slots[g.PSRType+"/"+g.Direction]++
+		if g.QuantityW < 0 {
+			t.Errorf("negative quantity %+v", g)
+		}
+	}
+	for _, key := range []string{"B04/generation", "B16/generation", "B19/generation"} {
+		if slots[key] != 96+52 {
+			t.Errorf("%s: %d slots, want %d (same publication lag as load)", key, slots[key], 96+52)
+		}
+	}
+	if slots["B10/generation"] != slots["B10/consumption"] {
+		t.Errorf("pumped storage has %d generation and %d consumption slots", slots["B10/generation"], slots["B10/consumption"])
+	}
+}
+
 func TestNoDataBeforePublication(t *testing.T) {
 	now := mustTime(t, "2026-10-24T14:07:00Z")
 	client, _ := fakeAt(t, noRevisions, &now)
@@ -192,7 +216,8 @@ func TestBadRequests(t *testing.T) {
 		want  int
 	}{
 		{"missing token", "documentType=A44&in_Domain=Z&out_Domain=Z&periodStart=202610230000&periodEnd=202610240000", http.StatusUnauthorized},
-		{"unknown document type", valid + "&documentType=A75", http.StatusBadRequest},
+		{"unknown document type", valid + "&documentType=A73", http.StatusBadRequest},
+		{"A75 forecast", valid + "&documentType=A75&processType=A01&in_Domain=Z", http.StatusBadRequest},
 		{"A44 with different domains", valid + "&documentType=A44&in_Domain=A&out_Domain=B", http.StatusBadRequest},
 		{"A65 forecast", valid + "&documentType=A65&processType=A01&outBiddingZone_Domain=Z", http.StatusBadRequest},
 		{"bad period", "securityToken=t&documentType=A44&in_Domain=Z&out_Domain=Z&periodStart=2026-10-23&periodEnd=202610240000", http.StatusBadRequest},
