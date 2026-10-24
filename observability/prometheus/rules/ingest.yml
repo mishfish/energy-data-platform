@@ -1,33 +1,45 @@
 groups:
   - name: ingest
     rules:
-      # Freshness of each dataset: time since the last run that fetched data and stored it.
+      # Freshness of each dataset and zone: time since the last run that fetched data and stored it.
       # last_over_time keeps the last known value for an hour after scrapes stop, so the alert also
       # fires when the ingest process itself is down, not only when its runs fail.
       - alert: IngestStale
-        expr: time() - max by (dataset) (last_over_time(ingest_last_success_timestamp_seconds[1h])) > 45 * 60
+        expr: time() - max by (dataset, zone) (last_over_time(ingest_last_success_timestamp_seconds[1h])) > 45 * 60
         labels:
           severity: critical
         annotations:
-          summary: "No successful {{ $labels.dataset }} fetch for {{ $value | humanizeDuration }}"
+          summary: "No successful {{ $labels.dataset }} fetch for {{ $labels.zone }} for {{ $value | humanizeDuration }}"
           description: >-
-            The ingest service has not fetched and stored {{ $labels.dataset }} for more than 45 minutes
-            (three missed runs at the default 15-minute interval). Check ingest_fetches_total by result
-            and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
+            The ingest service has not fetched and stored {{ $labels.dataset }} for {{ $labels.zone }} for more
+            than 45 minutes (three missed runs at the default 15-minute interval). Check ingest_fetches_total by
+            result and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
 
-      # The gauge has no series until the first successful run, and its last value ages out of the
-      # window above an hour after scrapes stop. Both cases mean there is nothing to measure freshness from.
-      # absent() needs the dataset spelled out, so every dataset the service ingests is listed here.
+      # A configured job (ingest_job_info, ADR 0029) without a success on record. This covers zones that
+      # the source has stopped serving as well as a fresh start that never got through.
       - alert: IngestNeverSucceeded
-        expr: |
-          absent(ingest_last_success_timestamp_seconds{dataset="day_ahead_price"})
-          or absent(ingest_last_success_timestamp_seconds{dataset="actual_load"})
+        expr: >-
+          max by (dataset, zone) (ingest_job_info)
+          unless on (dataset, zone) max by (dataset, zone) (ingest_last_success_timestamp_seconds)
         for: 45m
         labels:
           severity: critical
         annotations:
-          summary: "No successful {{ $labels.dataset }} fetch on record"
+          summary: "No successful {{ $labels.dataset }} fetch for {{ $labels.zone }} on record"
           description: >-
-            ingest_last_success_timestamp_seconds for {{ $labels.dataset }} has been absent for 45 minutes:
-            either the ingest service has not completed a single successful run since it started, or it
-            is not being scraped at all.
+            The {{ $labels.dataset }} job for {{ $labels.zone }} has run for 45 minutes without a single successful
+            fetch. If the source answers no_data for this zone permanently, remove the zone from the
+            INGEST_*_ZONES list.
+
+      # Without scrapes neither rule above has anything to look at for long: job_info disappears with the
+      # process, and the last success ages out of last_over_time after an hour.
+      - alert: IngestDown
+        expr: up{job="ingest"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The ingest service is down"
+          description: >-
+            Prometheus has not scraped the ingest service for 5 minutes, so no zone is being fetched.
+            Check docker compose ps ingest and its logs.

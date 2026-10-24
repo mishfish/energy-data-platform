@@ -36,7 +36,7 @@ func newJob(t *testing.T, fetch fetchFunc, store storeFunc) (*Job[entsoe.DayAhea
 		Store:     store,
 		Metrics:   metrics,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Zone:      zoneNL,
+		Zone:      entsoe.Zone{Name: "NL", EIC: zoneNL},
 		Interval:  15 * time.Minute,
 		LookBack:  24 * time.Hour,
 		LookAhead: 48 * time.Hour,
@@ -171,15 +171,16 @@ func TestJobRunOnceResults(t *testing.T) {
 					if result == tt.wantResult {
 						want = 1
 					}
-					labels := map[string]string{"dataset": DatasetDayAheadPrice, "result": result}
+					labels := map[string]string{"dataset": DatasetDayAheadPrice, "zone": "NL", "result": result}
 					if got := metricValue(t, reg, "ingest_fetches_total", labels); got != want {
 						t.Errorf("ingest_fetches_total{result=%q} = %v, want %v", result, got, want)
 					}
-					if got := metricValue(t, reg, "ingest_fetch_duration_seconds", labels); got != want {
+					histogram := map[string]string{"dataset": DatasetDayAheadPrice, "result": result}
+					if got := metricValue(t, reg, "ingest_fetch_duration_seconds", histogram); got != want {
 						t.Errorf("ingest_fetch_duration_seconds{result=%q} count = %v, want %v", result, got, want)
 					}
 				}
-				dataset := map[string]string{"dataset": DatasetDayAheadPrice}
+				dataset := map[string]string{"dataset": DatasetDayAheadPrice, "zone": "NL"}
 				if got := metricValue(t, reg, "ingest_rows_upserted_total", dataset); got != tt.wantRows {
 					t.Errorf("ingest_rows_upserted_total = %v, want %v", got, tt.wantRows)
 				}
@@ -274,7 +275,7 @@ func TestJobShutdownDuringRun(t *testing.T) {
 
 		// An interrupted run says nothing about the source, so it must not count as a failure.
 		for _, result := range []string{resultSuccess, resultNoData, resultFetchError, resultStoreError} {
-			labels := map[string]string{"dataset": DatasetDayAheadPrice, "result": result}
+			labels := map[string]string{"dataset": DatasetDayAheadPrice, "zone": "NL", "result": result}
 			if got := metricValue(t, reg, "ingest_fetches_total", labels); got != 0 {
 				t.Errorf("ingest_fetches_total{result=%q} = %v, want 0", result, got)
 			}
@@ -312,6 +313,7 @@ func TestJobRunInitialisesSeries(t *testing.T) {
 			"ingest_fetches_total":          4,
 			"ingest_fetch_duration_seconds": 4,
 			"ingest_rows_upserted_total":    1,
+			"ingest_job_info":               1,
 		}
 		if len(got) != len(want) {
 			t.Errorf("got metric families %v, want %v", got, want)
@@ -322,6 +324,62 @@ func TestJobRunInitialisesSeries(t *testing.T) {
 			}
 		}
 
+		cancel()
+		<-done
+	})
+}
+
+func TestJobStartDelay(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var fetches atomic.Int32
+		job, _ := newJob(t,
+			func(context.Context, string, time.Time, time.Time) ([]entsoe.DayAheadPrice, error) {
+				fetches.Add(1)
+				return nil, nil
+			},
+			func(context.Context, []entsoe.DayAheadPrice) (int64, error) { return 0, nil })
+		job.StartDelay = 5 * time.Minute
+
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			job.Run(ctx)
+		}()
+
+		time.Sleep(4 * time.Minute)
+		synctest.Wait()
+		if got := fetches.Load(); got != 0 {
+			t.Errorf("%d fetches before the start delay", got)
+		}
+		time.Sleep(2 * time.Minute) // first run at 5m, next at 20m
+		synctest.Wait()
+		if got := fetches.Load(); got != 1 {
+			t.Errorf("%d fetches after the start delay, want 1", got)
+		}
+
+		cancel()
+		<-done
+	})
+}
+
+func TestJobStartDelayCancelled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		job, _ := newJob(t,
+			func(context.Context, string, time.Time, time.Time) ([]entsoe.DayAheadPrice, error) {
+				t.Error("fetched although stopped during the start delay")
+				return nil, nil
+			},
+			func(context.Context, []entsoe.DayAheadPrice) (int64, error) { return 0, nil })
+		job.StartDelay = time.Hour
+
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			job.Run(ctx)
+		}()
+		time.Sleep(time.Minute)
 		cancel()
 		<-done
 	})

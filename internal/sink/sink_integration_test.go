@@ -161,8 +161,9 @@ func startStack(t *testing.T) stack {
 	return s
 }
 
-// produce writes the change history of the scenario, including a redelivered snapshot.
-func produce(t *testing.T, s stack) {
+// produce writes the change history of the scenario, including a redelivered snapshot. The load
+// topic is created after the price events are delivered and beforeLoad, if set, has returned.
+func produce(t *testing.T, s stack, beforeLoad func()) {
 	t.Helper()
 	client, err := schemaregistry.NewClient(schemaregistry.NewConfig(s.registryURL))
 	if err != nil {
@@ -186,7 +187,7 @@ func produce(t *testing.T, s stack) {
 		t.Fatalf("producer: %v", err)
 	}
 	defer p.Close()
-	createTopics(t, p)
+	createTopics(t, p, priceTopic)
 
 	deliveries := make(chan kafka.Event, 16)
 	sent := 0
@@ -214,28 +215,38 @@ func produce(t *testing.T, s stack) {
 	// At-least-once: the snapshot is delivered again after the changes.
 	send(priceTopic, slotA, &priceEvent{After: price(slotA, "109.95"), Source: at(100), Op: "r"})
 	send(priceTopic, slotB, &priceEvent{After: price(slotB, "-0.80"), Source: at(100), Op: "r"})
-	send(loadTopic, slotA, &loadEvent{After: &loadImage{"10YNL----------L", slotA, 900_000_000, "13663.500", "2026-10-03T06:14:52.000000Z"}, Source: at(110), Op: "r"})
-
-	for range sent {
-		if m := (<-deliveries).(*kafka.Message); m.TopicPartition.Error != nil {
-			t.Fatalf("delivery to %s: %v", *m.TopicPartition.Topic, m.TopicPartition.Error)
+	awaitDeliveries := func() {
+		t.Helper()
+		for ; sent > 0; sent-- {
+			if m := (<-deliveries).(*kafka.Message); m.TopicPartition.Error != nil {
+				t.Fatalf("delivery to %s: %v", *m.TopicPartition.Topic, m.TopicPartition.Error)
+			}
 		}
 	}
+	awaitDeliveries()
+
+	if beforeLoad != nil {
+		beforeLoad()
+	}
+	createTopics(t, p, loadTopic)
+	send(loadTopic, slotA, &loadEvent{After: &loadImage{"10YNL----------L", slotA, 900_000_000, "13663.500", "2026-10-03T06:14:52.000000Z"}, Source: at(110), Op: "r"})
+	awaitDeliveries()
 }
 
 // createTopics creates the CDC topics up front: broker auto-creation is off in the compose stack
 // too, where Connect creates them.
-func createTopics(t *testing.T, p *kafka.Producer) {
+func createTopics(t *testing.T, p *kafka.Producer, topics ...string) {
 	t.Helper()
 	admin, err := kafka.NewAdminClientFromProducer(p)
 	if err != nil {
 		t.Fatalf("admin client: %v", err)
 	}
 	defer admin.Close()
-	results, err := admin.CreateTopics(t.Context(), []kafka.TopicSpecification{
-		{Topic: priceTopic, NumPartitions: 1, ReplicationFactor: 1},
-		{Topic: loadTopic, NumPartitions: 1, ReplicationFactor: 1},
-	})
+	specs := make([]kafka.TopicSpecification, len(topics))
+	for i, topic := range topics {
+		specs[i] = kafka.TopicSpecification{Topic: topic, NumPartitions: 1, ReplicationFactor: 1}
+	}
+	results, err := admin.CreateTopics(t.Context(), specs)
 	if err != nil {
 		t.Fatalf("create topics: %v", err)
 	}
@@ -274,8 +285,9 @@ func (c *crashBeforeCommit) Commit([]sink.Offset) error {
 }
 
 // runSink runs a sink of the given group until it has written wantRows rows, it stops on its own,
-// or limit passes.
-func runSink(t *testing.T, s stack, group string, wrapConsumer func(sink.Consumer, context.CancelFunc) sink.Consumer, wantRows int64, limit time.Duration) *countingWriter {
+// or limit passes. whileRunning, if set, runs on the test goroutine once the sink has started.
+func runSink(t *testing.T, s stack, group string, wrapConsumer func(sink.Consumer, context.CancelFunc) sink.Consumer,
+	whileRunning func(), wantRows int64, limit time.Duration) *countingWriter {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	metrics, err := sink.NewMetrics(prometheus.NewRegistry())
@@ -311,6 +323,9 @@ func runSink(t *testing.T, s stack, group string, wrapConsumer func(sink.Consume
 	errCh := make(chan error, 1)
 	go func() { errCh <- snk.Run(ctx, context.WithoutCancel(t.Context())) }()
 	deadline := time.Now().Add(limit)
+	if whileRunning != nil {
+		whileRunning()
+	}
 	for ctx.Err() == nil && (wantRows == 0 || writer.rows.Load() < wantRows) && time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -372,11 +387,11 @@ func sameState(got map[string]string) bool {
 // The scenarios of ADR 0026 against real Kafka, Apicurio and ClickHouse.
 func TestSinkEndToEnd(t *testing.T) {
 	s := startStack(t)
-	produce(t, s)
+	produce(t, s, nil)
 	const events = 7 // all records except the tombstone carry a row
 
 	t.Run("loads the current state and commits", func(t *testing.T) {
-		w := runSink(t, s, "first", nil, events, 90*time.Second)
+		w := runSink(t, s, "first", nil, nil, events, 90*time.Second)
 		if w.rows.Load() != events {
 			t.Fatalf("wrote %d rows, want %d", w.rows.Load(), events)
 		}
@@ -387,7 +402,7 @@ func TestSinkEndToEnd(t *testing.T) {
 
 	t.Run("a restart of the same group reads nothing again", func(t *testing.T) {
 		// The first run committed everything it wrote, including on shutdown.
-		if w := runSink(t, s, "first", nil, 0, 15*time.Second); w.rows.Load() != 0 {
+		if w := runSink(t, s, "first", nil, nil, 0, 15*time.Second); w.rows.Load() != 0 {
 			t.Errorf("restart wrote %d rows, want 0", w.rows.Load())
 		}
 	})
@@ -397,13 +412,13 @@ func TestSinkEndToEnd(t *testing.T) {
 			func(c sink.Consumer, cancel context.CancelFunc) sink.Consumer {
 				return &crashBeforeCommit{Consumer: c, crash: cancel}
 			},
-			0, 90*time.Second)
+			nil, 0, 90*time.Second)
 		if crashed.rows.Load() == 0 {
 			t.Fatal("the crashing sink wrote nothing")
 		}
 
 		// Nothing was committed for "second", so a restart gets every record again.
-		w := runSink(t, s, "second", nil, events, 90*time.Second)
+		w := runSink(t, s, "second", nil, nil, events, 90*time.Second)
 		if w.rows.Load() != events {
 			t.Errorf("restart wrote %d rows, want all %d redelivered", w.rows.Load(), events)
 		}
@@ -411,4 +426,38 @@ func TestSinkEndToEnd(t *testing.T) {
 			t.Errorf("state after redelivery %v, want %v", got, wantState)
 		}
 	})
+}
+
+// On a fresh stack the sink subscribes before Debezium creates the topics, and they appear one by
+// one. librdkafka finds the first quickly, but a topic created after the first assignment waits for
+// the next periodic metadata refresh, 5 minutes by default; the sink must pick it up in seconds.
+func TestSinkPicksUpTopicsCreatedAfterSubscribing(t *testing.T) {
+	s := startStack(t)
+	const events = 7
+	var loadCreated time.Time
+	w := runSink(t, s, "late", nil, func() {
+		time.Sleep(3 * time.Second) // the sink subscribes to topics that do not exist yet
+		produce(t, s, func() {
+			// Create the load topic only once the sink consumes prices, i.e. after its first assignment.
+			deadline := time.Now().Add(60 * time.Second)
+			for state(t, s.chDSN)["price 2026-10-02 07:00:00.000"] != "122.45" {
+				if time.Now().After(deadline) {
+					t.Fatal("the sink did not consume the price topic")
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+		})
+		loadCreated = time.Now()
+	}, events, 2*time.Minute)
+
+	if w.rows.Load() != events {
+		t.Fatalf("wrote %d rows, want %d; the load topic was not picked up within %s",
+			w.rows.Load(), events, time.Since(loadCreated).Round(time.Second))
+	}
+	if took := time.Since(loadCreated); took > 30*time.Second {
+		t.Errorf("the load topic was picked up %s after it appeared, want under 30s", took.Round(time.Second))
+	}
+	if got := state(t, s.chDSN); !sameState(got) {
+		t.Errorf("state %v, want %v", got, wantState)
+	}
 }

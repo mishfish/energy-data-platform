@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -21,7 +19,7 @@ type ActualLoad struct {
 	BiddingZone     string        // EIC code
 	DeliveryStart   time.Time     // start of the market time unit, UTC
 	Resolution      time.Duration // length of the market time unit
-	QuantityKW      int64         // average load over the market time unit in kW (ADR 0019)
+	QuantityW       int64         // average load over the market time unit in watts (ADR 0029)
 	SourceCreatedAt time.Time     // createdDateTime of the document, UTC
 }
 
@@ -163,12 +161,12 @@ func expandLoadPeriod(p glPeriod, curveType string) ([]ActualLoad, error) {
 	slots := int(span / resolution)
 
 	loads := make([]ActualLoad, 0, slots)
-	var kw int64
+	var watts int64
 	next := 0 // index of the first point not consumed yet
 	for pos := 1; pos <= slots; pos++ {
 		switch {
 		case next < len(p.Points) && p.Points[next].Position == pos:
-			kw, err = parseKW(p.Points[next].Quantity)
+			watts, err = parseWatts(p.Points[next].Quantity)
 			if err != nil {
 				return nil, fmt.Errorf("position %d: %w", pos, err)
 			}
@@ -179,7 +177,7 @@ func expandLoadPeriod(p glPeriod, curveType string) ([]ActualLoad, error) {
 		loads = append(loads, ActualLoad{
 			DeliveryStart: start.Add(time.Duration(pos-1) * resolution),
 			Resolution:    resolution,
-			QuantityKW:    kw,
+			QuantityW:     watts,
 		})
 	}
 	if next < len(p.Points) {
@@ -188,17 +186,19 @@ func expandLoadPeriod(p glPeriod, curveType string) ([]ActualLoad, error) {
 	return loads, nil
 }
 
-// parseKW converts a quantity in MW such as "13663.5" or "13837" to kW without going through a float.
-// Quantities that do not fit numeric(12, 3), have more than three decimals or are negative are rejected:
-// total load cannot be negative, so a sign means the source format changed.
-func parseKW(s string) (int64, error) {
-	whole, frac, hasPoint := strings.Cut(s, ".")
-	if !isDigits(whole) || len(whole) > 9 || hasPoint != isDigits(frac) || len(frac) > 3 {
+// Scale of load quantities: numeric(15, 6) in MW, i.e. watts (ADR 0029).
+const (
+	loadDecimals = 6
+	loadMaxWhole = 9
+)
+
+// parseWatts converts a quantity in MW such as "13663.5" or "47823.885889" to watts without going
+// through a float. Quantities that do not fit numeric(15, 6) or are negative are rejected: total
+// load cannot be negative, so a sign means the source format changed.
+func parseWatts(s string) (int64, error) {
+	v, ok := parseFixed(s, loadDecimals, loadMaxWhole, false)
+	if !ok {
 		return 0, fmt.Errorf("invalid quantity %q", s)
 	}
-	kw, err := strconv.ParseInt(whole+frac+"000"[len(frac):], 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid quantity %q: %w", s, err)
-	}
-	return kw, nil
+	return v, nil
 }

@@ -18,6 +18,16 @@ const (
 	// Realised load is revised days to weeks after publication (ADR 0020).
 	defaultActualLoadLookBack  = 7 * 24 * time.Hour
 	defaultActualLoadLookAhead = 24 * time.Hour
+
+	// Zones with data on the Transparency Platform, checked against the live API on 2026-10-24
+	// (ADR 0029). Not listed for prices: BA, CY and GB (no data), UA_IPS (prices in UAH). Not listed
+	// for load: GB, IE_SEM and UA_IPS (no data).
+	defaultDayAheadZones = "AL,AT,BE,BG,CH,CZ,DE_LU,DK_1,DK_2,EE,ES,FI,FR,GR,HR,HU,IE_SEM," +
+		"IT_CALA,IT_CNOR,IT_CSUD,IT_NORD,IT_SARD,IT_SICI,IT_SUD,LT,LV,ME,MK,NL," +
+		"NO_1,NO_2,NO_3,NO_4,NO_5,PL,PT,RO,RS,SE_1,SE_2,SE_3,SE_4,SI,SK,XK"
+	defaultActualLoadZones = "AL,AT,BA,BE,BG,CH,CY,CZ,DE_LU,DK_1,DK_2,EE,ES,FI,FR,GR,HR,HU," +
+		"IT_CALA,IT_CNOR,IT_CSUD,IT_NORD,IT_SARD,IT_SICI,IT_SUD,LT,LV,ME,MK,NL," +
+		"NO_1,NO_2,NO_3,NO_4,NO_5,PL,PT,RO,RS,SE_1,SE_2,SE_3,SE_4,SI,SK,XK"
 )
 
 // config is the service configuration, read from environment variables (see .env.example).
@@ -27,10 +37,12 @@ type config struct {
 	entsoeBaseURL string
 	entsoeToken   string
 
+	dayAheadZones     []entsoe.Zone
 	dayAheadInterval  time.Duration
 	dayAheadLookBack  time.Duration
 	dayAheadLookAhead time.Duration
 
+	actualLoadZones     []entsoe.Zone
 	actualLoadInterval  time.Duration
 	actualLoadLookBack  time.Duration
 	actualLoadLookAhead time.Duration
@@ -54,6 +66,25 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	if cfg.entsoeToken == "" {
 		return config{}, errors.New("ENTSOE_API_TOKEN is not set")
+	}
+
+	for _, z := range []struct {
+		name     string
+		dst      *[]entsoe.Zone
+		fallback string
+	}{
+		{"INGEST_DAY_AHEAD_ZONES", &cfg.dayAheadZones, defaultDayAheadZones},
+		{"INGEST_ACTUAL_LOAD_ZONES", &cfg.actualLoadZones, defaultActualLoadZones},
+	} {
+		list := getenv(z.name)
+		if list == "" {
+			list = z.fallback
+		}
+		zones, err := entsoe.ParseZones(list)
+		if err != nil {
+			return config{}, fmt.Errorf("%s: %w", z.name, err)
+		}
+		*z.dst = zones
 	}
 
 	durations := []struct {

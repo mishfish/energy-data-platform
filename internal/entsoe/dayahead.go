@@ -44,7 +44,8 @@ type DayAheadPrice struct {
 	BiddingZone     string        // EIC code
 	DeliveryStart   time.Time     // start of the market time unit, UTC
 	Resolution      time.Duration // length of the market time unit
-	PriceCents      int64         // EUR cents per MWh, can be negative (ADR 0014)
+	Sequence        int           // classificationSequence position; 0 when the document has a single sequence (ADR 0029)
+	PriceMicros     int64         // millionths of EUR per MWh, can be negative (ADR 0029)
 	SourceCreatedAt time.Time     // createdDateTime of the document, UTC
 }
 
@@ -63,6 +64,7 @@ type publicationDocument struct {
 
 type timeSeries struct {
 	InDomain  string   `xml:"in_Domain.mRID"`
+	Sequence  string   `xml:"classificationSequence_AttributeInstanceComponent.position"`
 	Currency  string   `xml:"currency_Unit.name"`
 	PriceUnit string   `xml:"price_Measure_Unit.name"`
 	CurveType string   `xml:"curveType"`
@@ -154,6 +156,7 @@ func dayAheadPrices(doc publicationDocument) ([]DayAheadPrice, error) {
 
 	type key struct {
 		zone       string
+		sequence   int
 		start      time.Time
 		resolution time.Duration
 	}
@@ -164,6 +167,10 @@ func dayAheadPrices(doc publicationDocument) ([]DayAheadPrice, error) {
 		if err := checkTimeSeries(ts); err != nil {
 			return nil, fmt.Errorf("time series %d: %w", i+1, err)
 		}
+		sequence, err := parseSequence(ts.Sequence)
+		if err != nil {
+			return nil, fmt.Errorf("time series %d: %w", i+1, err)
+		}
 		for _, p := range ts.Periods {
 			expanded, err := expandPeriod(p, ts.CurveType)
 			if err != nil {
@@ -171,12 +178,13 @@ func dayAheadPrices(doc publicationDocument) ([]DayAheadPrice, error) {
 			}
 			for _, price := range expanded {
 				price.BiddingZone = ts.InDomain
+				price.Sequence = sequence
 				price.SourceCreatedAt = createdAt
 				// Two values for one table key in a single document would make the upsert ambiguous.
-				k := key{price.BiddingZone, price.DeliveryStart, price.Resolution}
+				k := key{price.BiddingZone, price.Sequence, price.DeliveryStart, price.Resolution}
 				if _, dup := seen[k]; dup {
-					return nil, fmt.Errorf("time series %d: duplicate price for zone %s at %s (%s)",
-						i+1, k.zone, k.start.Format(time.RFC3339), k.resolution)
+					return nil, fmt.Errorf("time series %d: duplicate price for zone %s, sequence %d at %s (%s)",
+						i+1, k.zone, k.sequence, k.start.Format(time.RFC3339), k.resolution)
 				}
 				seen[k] = struct{}{}
 				prices = append(prices, price)
@@ -224,12 +232,12 @@ func expandPeriod(p period, curveType string) ([]DayAheadPrice, error) {
 	slots := int(span / resolution)
 
 	prices := make([]DayAheadPrice, 0, slots)
-	var cents int64
+	var micros int64
 	next := 0 // index of the first point not consumed yet
 	for pos := 1; pos <= slots; pos++ {
 		switch {
 		case next < len(p.Points) && p.Points[next].Position == pos:
-			cents, err = parseCents(p.Points[next].Price)
+			micros, err = parsePriceMicros(p.Points[next].Price)
 			if err != nil {
 				return nil, fmt.Errorf("position %d: %w", pos, err)
 			}
@@ -240,7 +248,7 @@ func expandPeriod(p period, curveType string) ([]DayAheadPrice, error) {
 		prices = append(prices, DayAheadPrice{
 			DeliveryStart: start.Add(time.Duration(pos-1) * resolution),
 			Resolution:    resolution,
-			PriceCents:    cents,
+			PriceMicros:   micros,
 		})
 	}
 	if next < len(p.Points) {
@@ -260,22 +268,56 @@ func parseTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("invalid timestamp %q", s)
 }
 
-// parseCents converts a decimal amount such as "74.78", "-4.67" or "75" to cents without going
-// through a float. Amounts that do not fit numeric(10, 2) or have more than two decimals are rejected.
-func parseCents(s string) (int64, error) {
-	unsigned, negative := strings.CutPrefix(s, "-")
-	whole, frac, hasPoint := strings.Cut(unsigned, ".")
-	if !isDigits(whole) || len(whole) > 8 || hasPoint != isDigits(frac) || len(frac) > 2 {
+// parseSequence reads the classificationSequence position of a time series. Documents with several
+// price sequences for one zone and day (several auctions) number them from 1; a document with a
+// single sequence omits the element, which is stored as 0.
+func parseSequence(s string) (int, error) {
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > 99 {
+		return 0, fmt.Errorf("invalid classificationSequence position %q", s)
+	}
+	return n, nil
+}
+
+// Scale of day-ahead prices: numeric(16, 6), i.e. micro-EUR per MWh (ADR 0029).
+const (
+	priceDecimals = 6
+	priceMaxWhole = 10
+)
+
+// parsePriceMicros converts a decimal amount such as "74.78", "-4.67" or "173.869995" to millionths
+// without going through a float. Amounts that do not fit numeric(16, 6) are rejected, not rounded.
+func parsePriceMicros(s string) (int64, error) {
+	v, ok := parseFixed(s, priceDecimals, priceMaxWhole, true)
+	if !ok {
 		return 0, fmt.Errorf("invalid price amount %q", s)
 	}
-	cents, err := strconv.ParseInt(whole+frac+"00"[len(frac):], 10, 64)
+	return v, nil
+}
+
+// parseFixed converts a plain decimal string to an integer with the given number of implied
+// decimals. It accepts digits, at most one '.', and a leading '-' if signed; at most maxWhole
+// digits before the point and decimals after it. maxWhole+decimals must stay below 19 digits.
+func parseFixed(s string, decimals, maxWhole int, signed bool) (int64, bool) {
+	unsigned, negative := strings.CutPrefix(s, "-")
+	if negative && !signed {
+		return 0, false
+	}
+	whole, frac, hasPoint := strings.Cut(unsigned, ".")
+	if !isDigits(whole) || len(whole) > maxWhole || hasPoint != isDigits(frac) || len(frac) > decimals {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(whole+frac+strings.Repeat("0", decimals-len(frac)), 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("invalid price amount %q: %w", s, err)
+		return 0, false
 	}
 	if negative {
-		cents = -cents
+		v = -v
 	}
-	return cents, nil
+	return v, true
 }
 
 // isDigits reports whether s is a non-empty string of ASCII digits.

@@ -33,40 +33,40 @@ func mustTime(t *testing.T, s string) time.Time {
 // Expected values come from testdata/README.md.
 func TestParseDayAheadPricesFixtures(t *testing.T) {
 	tests := []struct {
-		file          string
-		periodStart   string
-		createdAt     string
-		slots         int
-		sumCents      int64
-		minCents      int64
-		minAt         string
-		maxCents      int64
-		maxAt         string
-		trailingCents int64 // price of the last three slots, all omitted in the document
+		file           string
+		periodStart    string
+		createdAt      string
+		slots          int
+		sumMicros      int64
+		minMicros      int64
+		minAt          string
+		maxMicros      int64
+		maxAt          string
+		trailingMicros int64 // price of the last three slots, all omitted in the document
 	}{
 		{
 			file:        "a44_nl_pt15m.xml",
 			periodStart: "2026-10-01T22:00:00Z", createdAt: "2026-10-01T11:02:37Z",
-			slots: 96, sumCents: 678094,
-			minCents: -467, minAt: "2026-10-02T11:30:00Z",
-			maxCents: 11561, maxAt: "2026-10-02T06:30:00Z",
-			trailingCents: 6871,
+			slots: 96, sumMicros: 6780940000,
+			minMicros: -4670000, minAt: "2026-10-02T11:30:00Z",
+			maxMicros: 115610000, maxAt: "2026-10-02T06:30:00Z",
+			trailingMicros: 68710000,
 		},
 		{
 			file:        "a44_nl_pt15m_revised.xml",
 			periodStart: "2026-10-01T22:00:00Z", createdAt: "2026-10-02T09:15:04Z",
-			slots: 96, sumCents: 678925,
-			minCents: -499, minAt: "2026-10-02T10:45:00Z",
-			maxCents: 12245, maxAt: "2026-10-02T07:00:00Z",
-			trailingCents: 6871,
+			slots: 96, sumMicros: 6789250000,
+			minMicros: -4990000, minAt: "2026-10-02T10:45:00Z",
+			maxMicros: 122450000, maxAt: "2026-10-02T07:00:00Z",
+			trailingMicros: 68710000,
 		},
 		{
 			file:        "a44_nl_pt15m_dst_end.xml",
 			periodStart: "2026-10-24T22:00:00Z", createdAt: "2026-10-24T11:03:12Z",
-			slots: 100, sumCents: 709521,
-			minCents: -2718, minAt: "2026-10-25T11:30:00Z",
-			maxCents: 11774, maxAt: "2026-10-25T05:30:00Z",
-			trailingCents: 7500,
+			slots: 100, sumMicros: 7095210000,
+			minMicros: -27180000, minAt: "2026-10-25T11:30:00Z",
+			maxMicros: 117740000, maxAt: "2026-10-25T05:30:00Z",
+			trailingMicros: 75000000,
 		},
 	}
 	for _, tt := range tests {
@@ -92,26 +92,26 @@ func TestParseDayAheadPricesFixtures(t *testing.T) {
 				if p.BiddingZone != zoneNL || p.Resolution != 15*time.Minute || !p.SourceCreatedAt.Equal(createdAt) {
 					t.Errorf("slot %d: zone %q, resolution %s, created at %s", i+1, p.BiddingZone, p.Resolution, p.SourceCreatedAt)
 				}
-				sum += p.PriceCents
-				if p.PriceCents < lowest.PriceCents {
+				sum += p.PriceMicros
+				if p.PriceMicros < lowest.PriceMicros {
 					lowest = p
 				}
-				if p.PriceCents > highest.PriceCents {
+				if p.PriceMicros > highest.PriceMicros {
 					highest = p
 				}
 			}
-			if sum != tt.sumCents {
-				t.Errorf("sum %d cents, want %d", sum, tt.sumCents)
+			if sum != tt.sumMicros {
+				t.Errorf("sum %d micros, want %d", sum, tt.sumMicros)
 			}
-			if lowest.PriceCents != tt.minCents || !lowest.DeliveryStart.Equal(mustTime(t, tt.minAt)) {
-				t.Errorf("min %d at %s, want %d at %s", lowest.PriceCents, lowest.DeliveryStart, tt.minCents, tt.minAt)
+			if lowest.PriceMicros != tt.minMicros || !lowest.DeliveryStart.Equal(mustTime(t, tt.minAt)) {
+				t.Errorf("min %d at %s, want %d at %s", lowest.PriceMicros, lowest.DeliveryStart, tt.minMicros, tt.minAt)
 			}
-			if highest.PriceCents != tt.maxCents || !highest.DeliveryStart.Equal(mustTime(t, tt.maxAt)) {
-				t.Errorf("max %d at %s, want %d at %s", highest.PriceCents, highest.DeliveryStart, tt.maxCents, tt.maxAt)
+			if highest.PriceMicros != tt.maxMicros || !highest.DeliveryStart.Equal(mustTime(t, tt.maxAt)) {
+				t.Errorf("max %d at %s, want %d at %s", highest.PriceMicros, highest.DeliveryStart, tt.maxMicros, tt.maxAt)
 			}
 			for i, p := range prices[len(prices)-3:] {
-				if p.PriceCents != tt.trailingCents {
-					t.Errorf("trailing slot %d: %d cents, want %d", len(prices)-2+i, p.PriceCents, tt.trailingCents)
+				if p.PriceMicros != tt.trailingMicros {
+					t.Errorf("trailing slot %d: %d micros, want %d", len(prices)-2+i, p.PriceMicros, tt.trailingMicros)
 				}
 			}
 		})
@@ -133,13 +133,13 @@ func TestParseDayAheadPricesRevision(t *testing.T) {
 
 	type change struct{ from, to int64 }
 	want := map[string]change{
-		"2026-10-02T07:00:00Z": {10995, 12245},
-		"2026-10-02T10:45:00Z": {-80, -499},
+		"2026-10-02T07:00:00Z": {109950000, 122450000},
+		"2026-10-02T10:45:00Z": {-800000, -4990000},
 	}
 	got := map[string]change{}
 	for i := range original {
-		if original[i].PriceCents != revised[i].PriceCents {
-			got[original[i].DeliveryStart.Format(time.RFC3339)] = change{original[i].PriceCents, revised[i].PriceCents}
+		if original[i].PriceMicros != revised[i].PriceMicros {
+			got[original[i].DeliveryStart.Format(time.RFC3339)] = change{original[i].PriceMicros, revised[i].PriceMicros}
 		}
 	}
 	if len(got) != len(want) {
@@ -217,19 +217,19 @@ func TestParseDayAheadPricesCurveTypes(t *testing.T) {
 		{
 			name: "A03 fills gaps and the tail",
 			doc:  document("A03", hourPeriod("2026-10-01T22:00Z", pt("1", "10.00"), pt("3", "-0.05"))),
-			want: []int64{1000, 1000, -5, -5},
+			want: []int64{10000000, 10000000, -50000, -50000},
 		},
 		{
 			name: "A01 with every position",
 			doc:  document("A01", hourPeriod("2026-10-01T22:00Z", pt("1", "1"), pt("2", "2.5"), pt("3", "3.25"), pt("4", "0"))),
-			want: []int64{100, 250, 325, 0},
+			want: []int64{1000000, 2500000, 3250000, 0},
 		},
 		{
 			name: "several periods",
 			doc: document("A03",
 				hourPeriod("2026-10-01T22:00Z", pt("1", "1.00")),
 				hourPeriod("2026-10-02T22:00Z", pt("1", "2.00"), pt("4", "3.00"))),
-			want: []int64{100, 100, 100, 100, 200, 200, 200, 300},
+			want: []int64{1000000, 1000000, 1000000, 1000000, 2000000, 2000000, 2000000, 3000000},
 		},
 	}
 	for _, tt := range tests {
@@ -242,8 +242,8 @@ func TestParseDayAheadPricesCurveTypes(t *testing.T) {
 				t.Fatalf("got %d prices, want %d", len(prices), len(tt.want))
 			}
 			for i, p := range prices {
-				if p.PriceCents != tt.want[i] {
-					t.Errorf("slot %d: %d cents, want %d", i+1, p.PriceCents, tt.want[i])
+				if p.PriceMicros != tt.want[i] {
+					t.Errorf("slot %d: %d micros, want %d", i+1, p.PriceMicros, tt.want[i])
 				}
 			}
 		})
@@ -303,24 +303,24 @@ func TestParseDayAheadPricesErrors(t *testing.T) {
 	}
 }
 
-func TestParseCents(t *testing.T) {
+func TestParsePriceMicros(t *testing.T) {
 	tests := []struct {
 		in      string
 		want    int64
 		wantErr bool
 	}{
-		{in: "74.78", want: 7478},
-		{in: "-4.67", want: -467},
-		{in: "-0.80", want: -80},
-		{in: "0.05", want: 5},
-		{in: "75", want: 7500},
-		{in: "75.5", want: 7550},
+		{in: "74.78", want: 74_780000},
+		{in: "-4.67", want: -4_670000},
+		{in: "-0.80", want: -800000},
+		{in: "0.05", want: 50000},
+		{in: "75", want: 75_000000},
+		{in: "173.745", want: 173_745000},    // IE_SEM publishes three decimals
+		{in: "173.869995", want: 173_869995}, // DK_1 publishes float32 artefacts, stored as sent
 		{in: "0", want: 0},
 		{in: "-0.00", want: 0},
-		{in: "4000.00", want: 400000},
-		{in: "99999999.99", want: 9999999999},
-		{in: "100000000.00", wantErr: true}, // does not fit numeric(10, 2)
-		{in: "1.234", wantErr: true},
+		{in: "9999999999.999999", want: 9999999999_999999},
+		{in: "10000000000", wantErr: true}, // does not fit numeric(16, 6)
+		{in: "1.2345678", wantErr: true},
 		{in: "", wantErr: true},
 		{in: "-", wantErr: true},
 		{in: "75.", wantErr: true},
@@ -334,12 +334,71 @@ func TestParseCents(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
-			got, err := parseCents(tt.in)
+			got, err := parsePriceMicros(tt.in)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("parseCents(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
+				t.Fatalf("parsePriceMicros(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
 			}
 			if got != tt.want {
-				t.Errorf("parseCents(%q) = %d, want %d", tt.in, got, tt.want)
+				t.Errorf("parsePriceMicros(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseDayAheadPricesSequences(t *testing.T) {
+	series := func(position, price string) string {
+		seq := ""
+		if position != "" {
+			seq = "<classificationSequence_AttributeInstanceComponent.position>" + position + "</classificationSequence_AttributeInstanceComponent.position>"
+		}
+		return `<TimeSeries>
+    <in_Domain.mRID>` + zoneNL + `</in_Domain.mRID>
+    <currency_Unit.name>EUR</currency_Unit.name>
+    <price_Measure_Unit.name>MWH</price_Measure_Unit.name>` + seq + `
+    <curveType>A03</curveType>` + hourPeriod("2026-10-01T22:00Z", pt("1", price)) + `
+  </TimeSeries>`
+	}
+	doc := func(series ...string) string {
+		return `<Publication_MarketDocument><type>A44</type><createdDateTime>2026-10-01T11:02:37Z</createdDateTime>` +
+			strings.Join(series, "") + `</Publication_MarketDocument>`
+	}
+
+	t.Run("several auctions for one day are kept apart", func(t *testing.T) {
+		prices, err := ParseDayAheadPrices(strings.NewReader(doc(series("2", "186.44"), series("1", "174.31"))))
+		if err != nil {
+			t.Fatalf("ParseDayAheadPrices: %v", err)
+		}
+		got := map[int]int64{}
+		for _, p := range prices {
+			got[p.Sequence] = p.PriceMicros
+		}
+		if len(prices) != 8 || got[1] != 174_310000 || got[2] != 186_440000 {
+			t.Errorf("got %d prices, by sequence %v", len(prices), got)
+		}
+	})
+
+	t.Run("a single sequence without a position is 0", func(t *testing.T) {
+		prices, err := ParseDayAheadPrices(strings.NewReader(doc(series("", "10"))))
+		if err != nil {
+			t.Fatalf("ParseDayAheadPrices: %v", err)
+		}
+		if prices[0].Sequence != 0 {
+			t.Errorf("sequence %d, want 0", prices[0].Sequence)
+		}
+	})
+
+	errs := []struct {
+		name, doc, wantErr string
+	}{
+		{"same sequence twice", doc(series("1", "1"), series("1", "2")), "duplicate price"},
+		{"bad position", doc(series("first", "1")), `invalid classificationSequence position "first"`},
+		{"zero position", doc(series("0", "1")), `invalid classificationSequence position "0"`},
+	}
+	for _, tt := range errs {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseDayAheadPrices(strings.NewReader(tt.doc))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("got error %v, want it to contain %q", err, tt.wantErr)
 			}
 		})
 	}

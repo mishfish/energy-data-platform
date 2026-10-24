@@ -109,8 +109,8 @@ func TestLoadFollowsPublicationLag(t *testing.T) {
 		t.Errorf("last slot %s, want 2026-10-24T12:45:00Z", got)
 	}
 	for _, l := range loads {
-		if l.QuantityKW < 5_000_000 || l.QuantityKW > 25_000_000 {
-			t.Errorf("slot %s: implausible load %d kW", l.DeliveryStart, l.QuantityKW)
+		if l.QuantityW < 5_000_000_000 || l.QuantityW > 25_000_000_000 {
+			t.Errorf("slot %s: implausible load %d W", l.DeliveryStart, l.QuantityW)
 		}
 	}
 }
@@ -142,7 +142,7 @@ func TestRevisions(t *testing.T) {
 		}
 		out := make(map[time.Time]int64, len(loads))
 		for _, l := range loads {
-			out[l.DeliveryStart] = l.QuantityKW
+			out[l.DeliveryStart] = l.QuantityW
 		}
 		return out
 	}

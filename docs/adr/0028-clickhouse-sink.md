@@ -28,4 +28,5 @@ ADR 0024–0027 fixed the store, the event format, the delivery semantics and th
 - The schema registry package of confluent-kafka-go pulls in cloud auth SDKs (Azure, GCP) as module dependencies; they are not used at runtime.
 - On the synthetic stack, ClickHouse `FINAL` matches Postgres row for row and to the cent after a full load, including a second full load of the same events by another consumer group.
 - `internal/sink/sink_integration_test.go` runs the ADR 0026 scenarios against Kafka (`confluent-local:8.2.4`), Apicurio and ClickHouse in testcontainers: snapshot, revision, delete with tombstone and a replayed snapshot end in the right `FINAL` state; a restart of the same group reads nothing again; a sink killed between write and commit has everything redelivered, and the state is unchanged. CI pulls these three images.
+- `topic.metadata.refresh.interval.ms` is 10 s. On a fresh stack the sink subscribes before Debezium creates the topics, and a topic created after the first assignment otherwise waits for librdkafka's 5-minute periodic refresh; found on the first live run, covered by `TestSinkPicksUpTopicsCreatedAfterSubscribing`.
 - Not covered yet: a DLQ.

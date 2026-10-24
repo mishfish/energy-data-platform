@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -40,7 +39,7 @@ func UpsertActualLoad(ctx context.Context, db Execer, loads []entsoe.ActualLoad)
 		zones[i] = l.BiddingZone
 		starts[i] = l.DeliveryStart
 		resolutions[i] = l.Resolution
-		quantities[i] = kwToNumeric(l.QuantityKW)
+		quantities[i] = microsToNumeric(l.QuantityW) // MW with six decimals is watts
 		createdAts[i] = l.SourceCreatedAt
 	}
 
@@ -49,9 +48,4 @@ func UpsertActualLoad(ctx context.Context, db Execer, loads []entsoe.ActualLoad)
 		return 0, fmt.Errorf("upsert %d actual load values: %w", len(loads), err)
 	}
 	return tag.RowsAffected(), nil
-}
-
-// kwToNumeric converts integer kW (ADR 0019) to an exact numeric in MW with three decimals.
-func kwToNumeric(kw int64) pgtype.Numeric {
-	return pgtype.Numeric{Int: big.NewInt(kw), Exp: -3, Valid: true}
 }

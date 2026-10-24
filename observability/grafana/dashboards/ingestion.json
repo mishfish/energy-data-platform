@@ -11,8 +11,8 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Time since last successful fetch",
-      "description": "Same expression as the IngestStale alert, which fires above 45 minutes. No value means no successful run on record (IngestNeverSucceeded).",
+      "title": "Stalest zone per dataset",
+      "description": "Age of the oldest last success across the zones of each dataset; IngestStale fires per zone above 45 minutes. See the per-zone table for which zone.",
       "gridPos": {
         "x": 0,
         "y": 0,
@@ -26,7 +26,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - max by (dataset) (last_over_time(ingest_last_success_timestamp_seconds[1h]))",
+          "expr": "max by (dataset) (time() - last_over_time(ingest_last_success_timestamp_seconds[1h]))",
           "legendFormat": "{{dataset}}",
           "instant": true
         }
@@ -232,7 +232,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - max by (dataset) (last_over_time(ingest_last_success_timestamp_seconds[1h]))",
+          "expr": "max by (dataset) (time() - last_over_time(ingest_last_success_timestamp_seconds[1h]))",
           "legendFormat": "{{dataset}}"
         }
       ],
@@ -406,6 +406,85 @@
           }
         },
         "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Freshness per zone",
+      "description": "Time since the last successful fetch for every dataset and zone, stalest first. Zones without a success on record are missing here; IngestNeverSucceeded covers them.",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 12
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - max by (dataset, zone) (last_over_time(ingest_last_success_timestamp_seconds[1h]))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "age"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "age",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1800
+              },
+              {
+                "color": "red",
+                "value": 2700
+              }
+            ]
+          },
+          "custom": {
+            "cellOptions": {
+              "type": "color-background"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
       }
     }
   ]

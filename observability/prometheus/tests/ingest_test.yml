@@ -8,26 +8,34 @@ tests:
   - name: healthy ingest does not alert
     interval: 1m
     input_series:
+      - series: 'up{job="ingest"}'
+        values: '1x120'
+      - series: 'ingest_job_info{dataset="day_ahead_price", zone="NL", job="ingest"}'
+        values: '1x120'
+      - series: 'ingest_job_info{dataset="actual_load", zone="DE_LU", job="ingest"}'
+        values: '1x120'
       # A successful run every 15 minutes: the gauge jumps by 900 s every 15 samples.
-      - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", job="ingest"}'
-        values: '0x14 900x14 1800x14 2700x14 3600x14 4500x14 5400x14'
-      - series: 'ingest_last_success_timestamp_seconds{dataset="actual_load", job="ingest"}'
-        values: '0x14 900x14 1800x14 2700x14 3600x14 4500x14 5400x14'
+      - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", zone="NL", job="ingest"}'
+        values: '0x14 900x14 1800x14 2700x14 3600x14 4500x14 5400x14 6300x14'
+      - series: 'ingest_last_success_timestamp_seconds{dataset="actual_load", zone="DE_LU", job="ingest"}'
+        values: '0x14 900x14 1800x14 2700x14 3600x14 4500x14 5400x14 6300x14'
     alert_rule_test:
-      - eval_time: 44m
-        alertname: IngestStale
       - eval_time: 100m
         alertname: IngestStale
       - eval_time: 100m
         alertname: IngestNeverSucceeded
+      - eval_time: 100m
+        alertname: IngestDown
 
-  - name: runs keep failing while the service is up
+  - name: one zone keeps failing while the others are fresh
     interval: 1m
     input_series:
-      # Last success at t=0, the service stays up and keeps exporting the same value. Load stays healthy.
-      - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", job="ingest"}'
+      - series: 'up{job="ingest"}'
+        values: '1x120'
+      # NL succeeded once at t=0 and then only fails; BE stays fresh.
+      - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", zone="NL", job="ingest"}'
         values: '0x120'
-      - series: 'ingest_last_success_timestamp_seconds{dataset="actual_load", job="ingest"}'
+      - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", zone="BE", job="ingest"}'
         values: '0+60x120'
     alert_rule_test:
       - eval_time: 45m
@@ -38,123 +46,79 @@ tests:
           - exp_labels:
               severity: critical
               dataset: day_ahead_price
+              zone: NL
             exp_annotations:
-              summary: "No successful day_ahead_price fetch for 46m 0s"
+              summary: "No successful day_ahead_price fetch for NL for 46m 0s"
               description: >-
-                The ingest service has not fetched and stored day_ahead_price for more than 45 minutes
-                (three missed runs at the default 15-minute interval). Check ingest_fetches_total by result
-                and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
-      - eval_time: 120m
+                The ingest service has not fetched and stored day_ahead_price for NL for more
+                than 45 minutes (three missed runs at the default 15-minute interval). Check ingest_fetches_total by
+                result and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
+
+  - name: a configured zone never succeeds
+    interval: 1m
+    input_series:
+      - series: 'up{job="ingest"}'
+        values: '1x120'
+      - series: 'ingest_job_info{dataset="actual_load", zone="NL", job="ingest"}'
+        values: '1x120'
+      - series: 'ingest_job_info{dataset="actual_load", zone="IE_SEM", job="ingest"}'
+        values: '1x120'
+      - series: 'ingest_last_success_timestamp_seconds{dataset="actual_load", zone="NL", job="ingest"}'
+        values: '0+60x120'
+    alert_rule_test:
+      - eval_time: 44m
         alertname: IngestNeverSucceeded
+      - eval_time: 46m
+        alertname: IngestNeverSucceeded
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              dataset: actual_load
+              zone: IE_SEM
+            exp_annotations:
+              summary: "No successful actual_load fetch for IE_SEM on record"
+              description: >-
+                The actual_load job for IE_SEM has run for 45 minutes without a single successful
+                fetch. If the source answers no_data for this zone permanently, remove the zone from the
+                INGEST_*_ZONES list.
 
   - name: ingest process stopped
     interval: 1m
     input_series:
-      # Last success at t=0, scrapes stop after 10 minutes. Every dataset goes stale together.
-      - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", job="ingest"}'
+      # Last success at t=0, the target goes down after 10 minutes.
+      - series: 'up{job="ingest"}'
+        values: '1x10 0x110'
+      - series: 'ingest_job_info{dataset="day_ahead_price", zone="NL", job="ingest"}'
+        values: '1x10 stale'
+      - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", zone="NL", job="ingest"}'
         values: '0x10 stale'
-      - series: 'ingest_last_success_timestamp_seconds{dataset="actual_load", job="ingest"}'
-        values: '0x10 stale'
     alert_rule_test:
-      - eval_time: 44m
-        alertname: IngestStale
+      - eval_time: 15m
+        alertname: IngestDown
+      - eval_time: 16m
+        alertname: IngestDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: ingest
+            exp_annotations:
+              summary: "The ingest service is down"
+              description: >-
+                Prometheus has not scraped the ingest service for 5 minutes, so no zone is being fetched.
+                Check docker compose ps ingest and its logs.
       - eval_time: 46m
         alertname: IngestStale
         exp_alerts:
           - exp_labels:
               severity: critical
               dataset: day_ahead_price
+              zone: NL
             exp_annotations:
-              summary: "No successful day_ahead_price fetch for 46m 0s"
+              summary: "No successful day_ahead_price fetch for NL for 46m 0s"
               description: >-
-                The ingest service has not fetched and stored day_ahead_price for more than 45 minutes
-                (three missed runs at the default 15-minute interval). Check ingest_fetches_total by result
-                and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
-          - exp_labels:
-              severity: critical
-              dataset: actual_load
-            exp_annotations:
-              summary: "No successful actual_load fetch for 46m 0s"
-              description: >-
-                The ingest service has not fetched and stored actual_load for more than 45 minutes
-                (three missed runs at the default 15-minute interval). Check ingest_fetches_total by result
-                and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
-      # Once the last sample ages out of the 1h window, the absent-series alert has already taken over.
-      - eval_time: 75m
+                The ingest service has not fetched and stored day_ahead_price for NL for more
+                than 45 minutes (three missed runs at the default 15-minute interval). Check ingest_fetches_total by
+                result and the ingest logs: fetch_error points at the source API or the token, store_error at Postgres.
+      # job_info went stale with the process, so there is no never-succeeded alert on top.
+      - eval_time: 100m
         alertname: IngestNeverSucceeded
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              dataset: day_ahead_price
-            exp_annotations:
-              summary: "No successful day_ahead_price fetch on record"
-              description: >-
-                ingest_last_success_timestamp_seconds for day_ahead_price has been absent for 45 minutes:
-                either the ingest service has not completed a single successful run since it started, or it
-                is not being scraped at all.
-          - exp_labels:
-              severity: critical
-              dataset: actual_load
-            exp_annotations:
-              summary: "No successful actual_load fetch on record"
-              description: >-
-                ingest_last_success_timestamp_seconds for actual_load has been absent for 45 minutes:
-                either the ingest service has not completed a single successful run since it started, or it
-                is not being scraped at all.
-
-  - name: service started but never succeeded
-    interval: 1m
-    input_series:
-      - series: 'ingest_fetches_total{dataset="day_ahead_price", result="fetch_error", job="ingest"}'
-        values: '1+0x120'
-      - series: 'ingest_fetches_total{dataset="actual_load", result="fetch_error", job="ingest"}'
-        values: '1+0x120'
-    alert_rule_test:
-      - eval_time: 44m
-        alertname: IngestNeverSucceeded
-      - eval_time: 46m
-        alertname: IngestNeverSucceeded
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              dataset: day_ahead_price
-            exp_annotations:
-              summary: "No successful day_ahead_price fetch on record"
-              description: >-
-                ingest_last_success_timestamp_seconds for day_ahead_price has been absent for 45 minutes:
-                either the ingest service has not completed a single successful run since it started, or it
-                is not being scraped at all.
-          - exp_labels:
-              severity: critical
-              dataset: actual_load
-            exp_annotations:
-              summary: "No successful actual_load fetch on record"
-              description: >-
-                ingest_last_success_timestamp_seconds for actual_load has been absent for 45 minutes:
-                either the ingest service has not completed a single successful run since it started, or it
-                is not being scraped at all.
-      - eval_time: 46m
-        alertname: IngestStale
-
-  - name: one dataset never succeeds while the other is healthy
-    interval: 1m
-    input_series:
-      - series: 'ingest_last_success_timestamp_seconds{dataset="day_ahead_price", job="ingest"}'
-        values: '0+60x120'
-      - series: 'ingest_fetches_total{dataset="actual_load", result="fetch_error", job="ingest"}'
-        values: '1+0x120'
-    alert_rule_test:
-      - eval_time: 46m
-        alertname: IngestNeverSucceeded
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              dataset: actual_load
-            exp_annotations:
-              summary: "No successful actual_load fetch on record"
-              description: >-
-                ingest_last_success_timestamp_seconds for actual_load has been absent for 45 minutes:
-                either the ingest service has not completed a single successful run since it started, or it
-                is not being scraped at all.
-      - eval_time: 46m
-        alertname: IngestStale

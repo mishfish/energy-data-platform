@@ -46,7 +46,7 @@ Load documents use a different root and field names than A44:
 | Value | `price.amount` (EUR/MWH) | `quantity` (`MAW`, megawatts) |
 | Process type | none | `process.processType`, `A16` = realised |
 
-Quantities are carried as `int64` kW (ADR 0019): `13663.5` MW is 13663500 kW. The fixtures mix values with 0 to 3 decimals. All A65 fixtures use `curveType` `A01`, so every position in a `Period` is present.
+Quantities are carried as `int64` watts (ADR 0029, earlier kW per ADR 0019): `13663.5` MW is 13663500000 W; the kW figures in the table below are what the tests multiply by 1000. The fixtures mix values with 0 to 3 decimals. All A65 fixtures use `curveType` `A01`, so every position in a `Period` is present.
 
 | File | createdDateTime | Slots | Sum (kW) | Min (kW) | Max (kW) | First slot | Last slot |
 |---|---|---|---|---|---|---|---|
@@ -59,3 +59,10 @@ Quantities are carried as `int64` kW (ADR 0019): `13663.5` MW is 13663500 kW. Th
 `a65_nl_pt15m_revised.xml` differs from `a65_nl_pt15m.xml` in exactly 2 slots:
   - position 41 (2026-10-02T08:00:00Z): 14046500 → 13987250 kW
   - position 70 (2026-10-02T15:15:00Z): 11667084 → 12004000 kW
+
+## Compared with the live API (2026-10-20)
+
+Responses for NL, 2026-10-16T22:00Z to 2026-10-20T22:00Z, parse without errors.
+
+- A44 matches the fixtures: one `TimeSeries` per delivery day, curve type `A03`, `PT15M`, up to two decimals.
+- A65 (A16) differs from the fixtures in shape, not in anything the parser rejects: curve type `A03` (the fixtures use `A01`), one `Period` spanning the whole window (373 positions over four days), always three decimals. The last published slot ended about 35 minutes before `createdDateTime`.

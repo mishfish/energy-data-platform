@@ -15,8 +15,8 @@ Go module, Makefile, compose stack (Postgres, Kafka, Prometheus, Grafana), CI, `
 
 Demo: the stack runs, prices appear in Postgres, stopping the fetcher fires the freshness alert.
 
-## M1.5: More sources (tentative)
-Load (A65), generation per production type (A75), Open-Meteo weather (ADR 0009). More bidding zones once open decision 10 (zone-to-coordinate mapping) is settled.
+## M1.5: More sources and zones
+Done: load (A65, ADR 0019, 0020) and every bidding zone with data (ADR 0029). Remaining: generation per production type (A75) and Open-Meteo weather (ADR 0009), which needs the coordinate half of open decision 10.
 
 ## M2a: CDC into Kafka
 Debezium on Kafka Connect (ADR 0004, 0006, 0022) streams `day_ahead_price` and `actual_load` into Kafka. Revisions appear as UPDATE events with the old and the new value.

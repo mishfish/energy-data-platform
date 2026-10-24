@@ -105,6 +105,23 @@ services:
       start_period: 30s
       retries: 10
 
+  # One-shot: the global BACKWARD compatibility rule of ADR 0025, set before the connector registers
+  # its first schemas. PUT updates an existing rule; POST creates it on a fresh registry.
+  registry-rules:
+    image: quay.io/debezium/connect:3.7.0.Final
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        curl -fsS -X PUT -H 'Content-Type: application/json' -d '{"ruleType":"COMPATIBILITY","config":"BACKWARD"}'
+        http://apicurio:8080/apis/registry/v3/admin/rules/COMPATIBILITY
+        || curl -fsS -X POST -H 'Content-Type: application/json' -d '{"ruleType":"COMPATIBILITY","config":"BACKWARD"}'
+        http://apicurio:8080/apis/registry/v3/admin/rules
+    depends_on:
+      apicurio:
+        condition: service_healthy
+    restart: "no"
+
   # One-shot connector registration, like migrate (ADR 0022). PUT .../config creates or updates the
   # connector, so re-running it is safe. Waits for the publication created by the migrations.
   register-connector:
@@ -122,6 +139,8 @@ services:
     volumes:
       - ./deploy/connect:/connectors:ro
     depends_on:
+      registry-rules:
+        condition: service_completed_successfully
       connect:
         condition: service_healthy
       migrate:
@@ -265,6 +284,8 @@ services:
       INGEST_ACTUAL_LOAD_INTERVAL: ${INGEST_ACTUAL_LOAD_INTERVAL:-}
       INGEST_ACTUAL_LOAD_LOOK_BACK: ${INGEST_ACTUAL_LOAD_LOOK_BACK:-}
       INGEST_ACTUAL_LOAD_LOOK_AHEAD: ${INGEST_ACTUAL_LOAD_LOOK_AHEAD:-}
+      INGEST_DAY_AHEAD_ZONES: ${INGEST_DAY_AHEAD_ZONES:-}
+      INGEST_ACTUAL_LOAD_ZONES: ${INGEST_ACTUAL_LOAD_ZONES:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -25,47 +25,47 @@ func TestParseActualLoadFixtures(t *testing.T) {
 		file      string
 		createdAt string
 		slots     int
-		sumKW     int64
-		minKW     int64
+		sumW      int64
+		minW      int64
 		minAt     string
-		maxKW     int64
+		maxW      int64
 		maxAt     string
 		first     string
 		last      string
 	}{
 		{
 			file: "a65_nl_pt15m.xml", createdAt: "2026-10-03T06:14:52Z",
-			slots: 96, sumKW: 1258023747,
-			minKW: 10659000, minAt: "2026-10-02T17:30:00Z",
-			maxKW: 15581560, maxAt: "2026-10-02T10:30:00Z",
+			slots: 96, sumW: 1258023747000,
+			minW: 10659000000, minAt: "2026-10-02T17:30:00Z",
+			maxW: 15581560000, maxAt: "2026-10-02T10:30:00Z",
 			first: "2026-10-01T22:00:00Z", last: "2026-10-02T21:45:00Z",
 		},
 		{
 			file: "a65_nl_pt15m_revised.xml", createdAt: "2026-10-09T08:12:44Z",
-			slots: 96, sumKW: 1258301413,
-			minKW: 10659000, minAt: "2026-10-02T17:30:00Z",
-			maxKW: 15581560, maxAt: "2026-10-02T10:30:00Z",
+			slots: 96, sumW: 1258301413000,
+			minW: 10659000000, minAt: "2026-10-02T17:30:00Z",
+			maxW: 15581560000, maxAt: "2026-10-02T10:30:00Z",
 			first: "2026-10-01T22:00:00Z", last: "2026-10-02T21:45:00Z",
 		},
 		{
 			file: "a65_nl_pt15m_partial.xml", createdAt: "2026-10-02T12:58:03Z",
-			slots: 56, sumKW: 764992059,
-			minKW: 11876000, minAt: "2026-10-02T04:15:00Z",
-			maxKW: 15581560, maxAt: "2026-10-02T10:30:00Z",
+			slots: 56, sumW: 764992059000,
+			minW: 11876000000, minAt: "2026-10-02T04:15:00Z",
+			maxW: 15581560000, maxAt: "2026-10-02T10:30:00Z",
 			first: "2026-10-01T22:00:00Z", last: "2026-10-02T11:45:00Z",
 		},
 		{
 			file: "a65_nl_pt15m_gap.xml", createdAt: "2026-10-03T06:15:30Z",
-			slots: 92, sumKW: 1209537187,
-			minKW: 10659000, minAt: "2026-10-02T17:30:00Z",
-			maxKW: 15581560, maxAt: "2026-10-02T10:30:00Z",
+			slots: 92, sumW: 1209537187000,
+			minW: 10659000000, minAt: "2026-10-02T17:30:00Z",
+			maxW: 15581560000, maxAt: "2026-10-02T10:30:00Z",
 			first: "2026-10-01T22:00:00Z", last: "2026-10-02T21:45:00Z",
 		},
 		{
 			file: "a65_nl_pt15m_dst_end.xml", createdAt: "2026-10-26T06:20:11Z",
-			slots: 100, sumKW: 1312494489,
-			minKW: 10883390, minAt: "2026-10-25T16:30:00Z",
-			maxKW: 15471964, maxAt: "2026-10-25T10:45:00Z",
+			slots: 100, sumW: 1312494489000,
+			minW: 10883390000, minAt: "2026-10-25T16:30:00Z",
+			maxW: 15471964000, maxAt: "2026-10-25T10:45:00Z",
 			first: "2026-10-24T22:00:00Z", last: "2026-10-25T22:45:00Z",
 		},
 	}
@@ -92,22 +92,22 @@ func TestParseActualLoadFixtures(t *testing.T) {
 				if l.BiddingZone != zoneNL || l.Resolution != 15*time.Minute || !l.SourceCreatedAt.Equal(createdAt) {
 					t.Errorf("slot %d: zone %q, resolution %s, created at %s", i+1, l.BiddingZone, l.Resolution, l.SourceCreatedAt)
 				}
-				sum += l.QuantityKW
-				if l.QuantityKW < lowest.QuantityKW {
+				sum += l.QuantityW
+				if l.QuantityW < lowest.QuantityW {
 					lowest = l
 				}
-				if l.QuantityKW > highest.QuantityKW {
+				if l.QuantityW > highest.QuantityW {
 					highest = l
 				}
 			}
-			if sum != tt.sumKW {
-				t.Errorf("sum %d kW, want %d", sum, tt.sumKW)
+			if sum != tt.sumW {
+				t.Errorf("sum %d W, want %d", sum, tt.sumW)
 			}
-			if lowest.QuantityKW != tt.minKW || !lowest.DeliveryStart.Equal(mustTime(t, tt.minAt)) {
-				t.Errorf("min %d at %s, want %d at %s", lowest.QuantityKW, lowest.DeliveryStart, tt.minKW, tt.minAt)
+			if lowest.QuantityW != tt.minW || !lowest.DeliveryStart.Equal(mustTime(t, tt.minAt)) {
+				t.Errorf("min %d at %s, want %d at %s", lowest.QuantityW, lowest.DeliveryStart, tt.minW, tt.minAt)
 			}
-			if highest.QuantityKW != tt.maxKW || !highest.DeliveryStart.Equal(mustTime(t, tt.maxAt)) {
-				t.Errorf("max %d at %s, want %d at %s", highest.QuantityKW, highest.DeliveryStart, tt.maxKW, tt.maxAt)
+			if highest.QuantityW != tt.maxW || !highest.DeliveryStart.Equal(mustTime(t, tt.maxAt)) {
+				t.Errorf("max %d at %s, want %d at %s", highest.QuantityW, highest.DeliveryStart, tt.maxW, tt.maxAt)
 			}
 			if got := loads[0].DeliveryStart; !got.Equal(mustTime(t, tt.first)) {
 				t.Errorf("first slot %s, want %s", got, tt.first)
@@ -148,13 +148,13 @@ func TestParseActualLoadRevision(t *testing.T) {
 
 	type change struct{ from, to int64 }
 	want := map[string]change{
-		"2026-10-02T08:00:00Z": {14046500, 13987250},
-		"2026-10-02T15:15:00Z": {11667084, 12004000},
+		"2026-10-02T08:00:00Z": {14046500000, 13987250000},
+		"2026-10-02T15:15:00Z": {11667084000, 12004000000},
 	}
 	got := map[string]change{}
 	for i := range original {
-		if original[i].QuantityKW != revised[i].QuantityKW {
-			got[original[i].DeliveryStart.Format(time.RFC3339)] = change{original[i].QuantityKW, revised[i].QuantityKW}
+		if original[i].QuantityW != revised[i].QuantityW {
+			got[original[i].DeliveryStart.Format(time.RFC3339)] = change{original[i].QuantityW, revised[i].QuantityW}
 		}
 	}
 	if len(got) != len(want) {
@@ -204,12 +204,12 @@ func TestParseActualLoadCurveTypes(t *testing.T) {
 		{
 			name: "A01 with every position",
 			doc:  loadDocument("A16", "A01", hourPeriod("2026-10-01T22:00Z", qty("1", "13663.5"), qty("2", "13837"), qty("3", "13903.34"), qty("4", "13557.505"))),
-			want: []int64{13663500, 13837000, 13903340, 13557505},
+			want: []int64{13663500000, 13837000000, 13903340000, 13557505000},
 		},
 		{
 			name: "A03 fills gaps and the tail",
 			doc:  loadDocument("A16", "A03", hourPeriod("2026-10-01T22:00Z", qty("1", "12000"), qty("3", "12500.25"))),
-			want: []int64{12000000, 12000000, 12500250, 12500250},
+			want: []int64{12000000000, 12000000000, 12500250000, 12500250000},
 		},
 	}
 	for _, tt := range tests {
@@ -222,8 +222,8 @@ func TestParseActualLoadCurveTypes(t *testing.T) {
 				t.Fatalf("got %d slots, want %d", len(loads), len(tt.want))
 			}
 			for i, l := range loads {
-				if l.QuantityKW != tt.want[i] {
-					t.Errorf("slot %d: %d kW, want %d", i+1, l.QuantityKW, tt.want[i])
+				if l.QuantityW != tt.want[i] {
+					t.Errorf("slot %d: %d W, want %d", i+1, l.QuantityW, tt.want[i])
 				}
 			}
 		})
@@ -265,21 +265,21 @@ func TestParseActualLoadErrors(t *testing.T) {
 	}
 }
 
-func TestParseKW(t *testing.T) {
+func TestParseWatts(t *testing.T) {
 	tests := []struct {
 		in      string
 		want    int64
 		wantErr bool
 	}{
-		{in: "13663.5", want: 13663500},
-		{in: "13837", want: 13837000},
-		{in: "13903.34", want: 13903340},
-		{in: "13557.505", want: 13557505},
-		{in: "0.001", want: 1},
+		{in: "13663.5", want: 13663_500000},
+		{in: "13837", want: 13837_000000},
+		{in: "13557.505", want: 13557_505000},
+		{in: "47823.885889", want: 47823_885889}, // DE_LU publishes six decimals
+		{in: "0.000001", want: 1},
 		{in: "0", want: 0},
-		{in: "999999999.999", want: 999999999999},
-		{in: "1000000000", wantErr: true}, // does not fit numeric(12, 3)
-		{in: "1.2345", wantErr: true},
+		{in: "999999999.999999", want: 999999999_999999},
+		{in: "1000000000", wantErr: true}, // does not fit numeric(15, 6)
+		{in: "1.2345678", wantErr: true},
 		{in: "", wantErr: true},
 		{in: "75.", wantErr: true},
 		{in: ".5", wantErr: true},
@@ -292,12 +292,12 @@ func TestParseKW(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
-			got, err := parseKW(tt.in)
+			got, err := parseWatts(tt.in)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("parseKW(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
+				t.Fatalf("parseWatts(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
 			}
 			if got != tt.want {
-				t.Errorf("parseKW(%q) = %d, want %d", tt.in, got, tt.want)
+				t.Errorf("parseWatts(%q) = %d, want %d", tt.in, got, tt.want)
 			}
 		})
 	}

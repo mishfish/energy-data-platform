@@ -38,6 +38,7 @@ func TestToRow(t *testing.T) {
 		{"insert", "actual_load", event("c", nil, image("", "13663.500"), lsn(120)), "13663.5", 0, 120},
 		{"update writes the after image", "day_ahead_price", event("u", image("109.95", ""), image("122.45", ""), lsn(250)), "122.45", 0, 250},
 		{"delete writes the before image", "day_ahead_price", event("d", image("-0.80", ""), nil, lsn(300)), "-0.8", 1, 300},
+		{"six decimals", "day_ahead_price", event("c", nil, image("173.869995", ""), lsn(310)), "173.869995", 0, 310},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -55,6 +56,23 @@ func TestToRow(t *testing.T) {
 				t.Errorf("resolution %d, zone %q", row.ResolutionUS, row.BiddingZone)
 			}
 		})
+	}
+}
+
+func TestToRowSequence(t *testing.T) {
+	img := image("186.44", "")
+	img.Sequence = 2
+	row, err := toRow("day_ahead_price", event("c", nil, img, lsn(1)))
+	if err != nil {
+		t.Fatalf("toRow: %v", err)
+	}
+	if row.Sequence != 2 {
+		t.Errorf("sequence %d, want 2", row.Sequence)
+	}
+
+	img.Sequence = 300
+	if _, err := toRow("day_ahead_price", event("c", nil, img, lsn(1))); err == nil {
+		t.Error("no error for a sequence that does not fit UInt8")
 	}
 }
 

@@ -33,9 +33,10 @@ func NewClickHouseWriter(ctx context.Context, dsn string) (*ClickHouseWriter, er
 // Close closes the connection.
 func (w *ClickHouseWriter) Close() error { return w.conn.Close() }
 
-var amountColumn = map[string]string{
-	"day_ahead_price": "price_eur_mwh",
-	"actual_load":     "load_mw",
+// insertSQL per table; only day_ahead_price has a sequence (ADR 0029).
+var insertSQL = map[string]string{
+	"day_ahead_price": "INSERT INTO day_ahead_price (bidding_zone, sequence, delivery_start, resolution_us, price_eur_mwh, source_created_at, lsn, is_deleted)",
+	"actual_load":     "INSERT INTO actual_load (bidding_zone, delivery_start, resolution_us, load_mw, source_created_at, lsn, is_deleted)",
 }
 
 // Write inserts the rows, one insert per table. Tables are not written atomically together: if the
@@ -54,17 +55,20 @@ func (w *ClickHouseWriter) Write(ctx context.Context, rows []Row) error {
 }
 
 func (w *ClickHouseWriter) insert(ctx context.Context, table string, rows []Row) error {
-	column, ok := amountColumn[table]
+	query, ok := insertSQL[table]
 	if !ok {
 		return fmt.Errorf("unknown table %q", table)
 	}
-	batch, err := w.conn.PrepareBatch(ctx, fmt.Sprintf(
-		"INSERT INTO %s (bidding_zone, delivery_start, resolution_us, %s, source_created_at, lsn, is_deleted)", table, column))
+	batch, err := w.conn.PrepareBatch(ctx, query)
 	if err != nil {
 		return fmt.Errorf("prepare insert into %s: %w", table, err)
 	}
 	for _, r := range rows {
-		if err := batch.Append(r.BiddingZone, r.DeliveryStart, r.ResolutionUS, r.Amount, r.SourceCreatedAt, r.LSN, r.IsDeleted); err != nil {
+		values := []any{r.BiddingZone, r.DeliveryStart, r.ResolutionUS, r.Amount, r.SourceCreatedAt, r.LSN, r.IsDeleted}
+		if table == "day_ahead_price" {
+			values = append([]any{r.BiddingZone, r.Sequence}, values[1:]...)
+		}
+		if err := batch.Append(values...); err != nil {
 			_ = batch.Abort()
 			return fmt.Errorf("append to %s: %w", table, err)
 		}

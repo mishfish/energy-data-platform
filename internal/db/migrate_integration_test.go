@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 
@@ -65,8 +66,8 @@ func TestMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query primary key: %v", err)
 	}
-	want := []string{"bidding_zone", "delivery_start", "resolution"}
-	if len(pk) != len(want) || pk[0] != want[0] || pk[1] != want[1] || pk[2] != want[2] {
+	want := []string{"bidding_zone", "sequence", "delivery_start", "resolution"}
+	if !slices.Equal(pk, want) {
 		t.Fatalf("primary key = %v, want %v", pk, want)
 	}
 

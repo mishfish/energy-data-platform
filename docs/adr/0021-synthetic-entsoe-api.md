@@ -23,6 +23,7 @@ The ingestion path (ADR 0015–0017, 0019, 0020) is unit- and integration-tested
 
 ## Consequences
 - The M1 demo and the coming CDC demos run without a token and with controllable revisions and failures.
+- Compared with the live API on 2026-10-20: the A44 shape matches; real A65 uses curve type A03 (the fake sends A01) and publishes load about 35 minutes after a slot ends (the fake assumes one hour). Neither difference affects ingest.
 - The fake encodes our understanding of the API. A contract test drives the real `entsoe.Client` against it, but it cannot catch a difference between the fake and the real API; the first live responses must be compared with it and with the fixtures.
 - The fake stack shares host ports with the main one, so only one of them runs at a time.
 - Every new document type that ingest fetches needs a generator here as well.

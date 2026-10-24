@@ -11,6 +11,9 @@ import (
 // statsInterval is how often librdkafka reports statistics, which carry the consumer lag.
 const statsInterval = 15 * time.Second
 
+// metadataRefresh bounds how long a topic created after the subscription stays unnoticed.
+const metadataRefresh = 10 * time.Second
+
 // KafkaConsumer adapts a confluent-kafka-go consumer to the Consumer interface. Offsets are
 // committed explicitly only (enable.auto.commit=false); auto offset store is off as well, so
 // librdkafka never commits on its own, not even on close.
@@ -32,6 +35,10 @@ func NewKafkaConsumer(brokers, groupID string, topics []string, metrics *Metrics
 		// A new group starts from the beginning: the topics hold the snapshot.
 		"auto.offset.reset":      "earliest",
 		"statistics.interval.ms": int(statsInterval / time.Millisecond),
+		// On a fresh stack the sink subscribes before Debezium has created the topics. librdkafka
+		// only notices a topic that appears later on its next metadata refresh, every 5 minutes by
+		// default; a short interval lets the sink pick it up within seconds.
+		"topic.metadata.refresh.interval.ms": int(metadataRefresh / time.Millisecond),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create consumer: %w", err)

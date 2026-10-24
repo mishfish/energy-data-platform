@@ -16,6 +16,7 @@ import (
 type Row struct {
 	Table           string
 	BiddingZone     string
+	Sequence        uint8 // day-ahead price sequence (ADR 0029); always 0 for load
 	DeliveryStart   time.Time
 	ResolutionUS    int64
 	Amount          decimal.Decimal // price_eur_mwh or load_mw
@@ -39,6 +40,7 @@ type envelope struct {
 // timestamps as ISO strings, the resolution in microseconds, amounts as decimal strings.
 type rowImage struct {
 	BiddingZone     string `avro:"bidding_zone"`
+	Sequence        int32  `avro:"sequence"` // absent before ADR 0029 and for load: stays 0
 	DeliveryStart   string `avro:"delivery_start"`
 	Resolution      int64  `avro:"resolution"`
 	PriceEURMWh     string `avro:"price_eur_mwh"`
@@ -98,9 +100,13 @@ func toRow(tableName string, ev envelope) (Row, error) {
 	if err != nil {
 		return Row{}, fmt.Errorf("amount: %w", err)
 	}
+	if image.Sequence < 0 || image.Sequence > 255 {
+		return Row{}, fmt.Errorf("sequence %d out of range", image.Sequence)
+	}
 	return Row{
 		Table:           t.name,
 		BiddingZone:     image.BiddingZone,
+		Sequence:        uint8(image.Sequence),
 		DeliveryStart:   deliveryStart.UTC(),
 		ResolutionUS:    image.Resolution,
 		Amount:          amount,

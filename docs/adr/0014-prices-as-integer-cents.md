@@ -1,6 +1,6 @@
 # 0014: Prices as integer cents in Go
 
-- Status: accepted
+- Status: superseded by ADR 0029 (six decimals, micro-EUR)
 - Date: 2026-10-10
 
 ## Context

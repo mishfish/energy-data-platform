@@ -79,15 +79,15 @@ func TestUpsertActualLoad(t *testing.T) {
 		if changed := upsertLoad(t, conn, fixtureLoad(t, "a65_nl_pt15m_partial.xml")); changed != 56 {
 			t.Errorf("changed %d rows, want 56", changed)
 		}
-		assertSummary(t, 56, "764992.059", 0)
+		assertSummary(t, 56, "764992.059000", 0)
 	})
 
 	t.Run("full day adds only the missing slots", func(t *testing.T) {
 		if changed := upsertLoad(t, conn, fixtureLoad(t, "a65_nl_pt15m.xml")); changed != 40 {
 			t.Errorf("changed %d rows, want 40", changed)
 		}
-		assertSummary(t, 96, "1258023.747", 0)
-		if got := storedLoad(t, conn, "2026-10-01T22:00:00Z"); got != "13663.500" {
+		assertSummary(t, 96, "1258023.747000", 0)
+		if got := storedLoad(t, conn, "2026-10-01T22:00:00Z"); got != "13663.500000" {
 			t.Errorf("first slot stored as %s, want 13663.500", got)
 		}
 	})
@@ -96,8 +96,8 @@ func TestUpsertActualLoad(t *testing.T) {
 		if changed := upsertLoad(t, conn, fixtureLoad(t, "a65_nl_pt15m_revised.xml")); changed != 2 {
 			t.Errorf("changed %d rows, want 2", changed)
 		}
-		assertSummary(t, 96, "1258301.413", 2)
-		for slot, want := range map[string]string{"2026-10-02T08:00:00Z": "13987.250", "2026-10-02T15:15:00Z": "12004.000"} {
+		assertSummary(t, 96, "1258301.413000", 2)
+		for slot, want := range map[string]string{"2026-10-02T08:00:00Z": "13987.250000", "2026-10-02T15:15:00Z": "12004.000000"} {
 			if got := storedLoad(t, conn, slot); got != want {
 				t.Errorf("slot %s: %s MW, want %s", slot, got, want)
 			}
@@ -108,15 +108,15 @@ func TestUpsertActualLoad(t *testing.T) {
 		if changed := upsertLoad(t, conn, fixtureLoad(t, "a65_nl_pt15m.xml")); changed != 0 {
 			t.Errorf("changed %d rows, want 0", changed)
 		}
-		assertSummary(t, 96, "1258301.413", 2)
+		assertSummary(t, 96, "1258301.413000", 2)
 	})
 
 	t.Run("negative load is rejected by the table", func(t *testing.T) {
 		bad := fixtureLoad(t, "a65_nl_pt15m_dst_end.xml")[:1]
-		bad[0].QuantityKW = -1
+		bad[0].QuantityW = -1
 		if changed, err := db.UpsertActualLoad(t.Context(), conn, bad); err == nil {
 			t.Fatalf("changed %d rows and got no error", changed)
 		}
-		assertSummary(t, 96, "1258301.413", 2)
+		assertSummary(t, 96, "1258301.413000", 2)
 	})
 }

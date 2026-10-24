@@ -1,6 +1,6 @@
 // Command ingest pulls ENTSO-E and Open-Meteo data into Postgres.
-// For now it fetches ENTSO-E day-ahead prices and actual load for NL on a fixed interval and serves
-// the HTTP endpoints (health, readiness, metrics).
+// It fetches ENTSO-E day-ahead prices and actual load for the configured bidding zones on a fixed
+// interval, one job per zone and dataset (ADR 0029), and serves health, readiness and metrics.
 //
 // Usage:
 //
@@ -29,11 +29,7 @@ import (
 	"github.com/mishfish/energy-data-platform/internal/ingest"
 )
 
-const (
-	shutdownTimeout = 10 * time.Second
-	// M1 and M1.5 ingest a single bidding zone.
-	biddingZoneNL = "10YNL----------L"
-)
+const shutdownTimeout = 10 * time.Second
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -88,34 +84,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	jobs := []interface{ Run(context.Context) }{
-		&ingest.Job[entsoe.DayAheadPrice]{
-			Dataset: ingest.DatasetDayAheadPrice,
-			Fetch:   client.DayAheadPrices,
-			Store: func(ctx context.Context, prices []entsoe.DayAheadPrice) (int64, error) {
-				return db.UpsertDayAheadPrices(ctx, pool, prices)
-			},
-			Metrics:   metrics,
-			Logger:    logger,
-			Zone:      biddingZoneNL,
-			Interval:  cfg.dayAheadInterval,
-			LookBack:  cfg.dayAheadLookBack,
-			LookAhead: cfg.dayAheadLookAhead,
-		},
-		&ingest.Job[entsoe.ActualLoad]{
-			Dataset: ingest.DatasetActualLoad,
-			Fetch:   client.ActualLoad,
-			Store: func(ctx context.Context, loads []entsoe.ActualLoad) (int64, error) {
-				return db.UpsertActualLoad(ctx, pool, loads)
-			},
-			Metrics:   metrics,
-			Logger:    logger,
-			Zone:      biddingZoneNL,
-			Interval:  cfg.actualLoadInterval,
-			LookBack:  cfg.actualLoadLookBack,
-			LookAhead: cfg.actualLoadLookAhead,
-		},
-	}
+	jobs := newJobs(cfg, client, pool, metrics, logger)
 
 	var ready atomic.Bool
 	srv := &http.Server{
@@ -138,7 +107,8 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	for _, job := range jobs {
 		jobsDone.Go(func() { job.Run(jobCtx) })
 	}
-	logger.Info("ingestion jobs started", "jobs", len(jobs), "zone", biddingZoneNL)
+	logger.Info("ingestion jobs started", "jobs", len(jobs),
+		"day_ahead_zones", len(cfg.dayAheadZones), "actual_load_zones", len(cfg.actualLoadZones))
 	ready.Store(true)
 
 	select {
@@ -163,4 +133,40 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 	logger.Info("shutdown complete")
 	return nil
+}
+
+type runner interface{ Run(context.Context) }
+
+// newJobs returns one job per zone and dataset. Their first runs are spread evenly over the
+// interval, so a start does not send every request to the API at once (ADR 0029).
+func newJobs(cfg config, client *entsoe.Client, pool *pgxpool.Pool, metrics *ingest.Metrics, logger *slog.Logger) []runner {
+	storePrices := func(ctx context.Context, prices []entsoe.DayAheadPrice) (int64, error) {
+		return db.UpsertDayAheadPrices(ctx, pool, prices)
+	}
+	storeLoad := func(ctx context.Context, loads []entsoe.ActualLoad) (int64, error) {
+		return db.UpsertActualLoad(ctx, pool, loads)
+	}
+
+	total := len(cfg.dayAheadZones) + len(cfg.actualLoadZones)
+	jobs := make([]runner, 0, total)
+	delay := func(interval time.Duration) time.Duration {
+		return time.Duration(len(jobs)) * interval / time.Duration(total)
+	}
+	for _, zone := range cfg.dayAheadZones {
+		jobs = append(jobs, &ingest.Job[entsoe.DayAheadPrice]{
+			Dataset: ingest.DatasetDayAheadPrice, Fetch: client.DayAheadPrices, Store: storePrices,
+			Metrics: metrics, Logger: logger, Zone: zone,
+			Interval: cfg.dayAheadInterval, StartDelay: delay(cfg.dayAheadInterval),
+			LookBack: cfg.dayAheadLookBack, LookAhead: cfg.dayAheadLookAhead,
+		})
+	}
+	for _, zone := range cfg.actualLoadZones {
+		jobs = append(jobs, &ingest.Job[entsoe.ActualLoad]{
+			Dataset: ingest.DatasetActualLoad, Fetch: client.ActualLoad, Store: storeLoad,
+			Metrics: metrics, Logger: logger, Zone: zone,
+			Interval: cfg.actualLoadInterval, StartDelay: delay(cfg.actualLoadInterval),
+			LookBack: cfg.actualLoadLookBack, LookAhead: cfg.actualLoadLookAhead,
+		})
+	}
+	return jobs
 }

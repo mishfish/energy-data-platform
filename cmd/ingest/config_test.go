@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,7 @@ func TestLoadConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("loadConfig: %v", err)
 		}
+		cfg.dayAheadZones, cfg.actualLoadZones = nil, nil // checked below
 		want := config{
 			httpAddr:          ":8080",
 			databaseURL:       required["DATABASE_URL"],
@@ -43,8 +45,24 @@ func TestLoadConfig(t *testing.T) {
 			actualLoadLookBack:  7 * 24 * time.Hour,
 			actualLoadLookAhead: 24 * time.Hour,
 		}
-		if cfg != want {
+		if !reflect.DeepEqual(cfg, want) {
 			t.Errorf("got %+v, want %+v", cfg, want)
+		}
+	})
+
+	t.Run("default zones", func(t *testing.T) {
+		env := with(nil)
+		cfg, err := loadConfig(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if len(cfg.dayAheadZones) != 45 || len(cfg.actualLoadZones) != 46 {
+			t.Errorf("got %d price zones and %d load zones, want 45 and 46", len(cfg.dayAheadZones), len(cfg.actualLoadZones))
+		}
+		for _, z := range cfg.dayAheadZones {
+			if z.Name == "GB" || z.Name == "UA_IPS" {
+				t.Errorf("price zones include %s, which has no EUR prices", z.Name)
+			}
 		}
 	})
 
@@ -58,6 +76,8 @@ func TestLoadConfig(t *testing.T) {
 			"INGEST_ACTUAL_LOAD_INTERVAL":   "5m",
 			"INGEST_ACTUAL_LOAD_LOOK_BACK":  "720h",
 			"INGEST_ACTUAL_LOAD_LOOK_AHEAD": "2h",
+			"INGEST_DAY_AHEAD_ZONES":        "NL,BE",
+			"INGEST_ACTUAL_LOAD_ZONES":      "DE_LU",
 		})
 		cfg, err := loadConfig(func(k string) string { return env[k] })
 		if err != nil {
@@ -65,7 +85,9 @@ func TestLoadConfig(t *testing.T) {
 		}
 		if cfg.httpAddr != ":9000" || cfg.entsoeBaseURL != "http://localhost:8081/api" ||
 			cfg.dayAheadInterval != time.Minute || cfg.dayAheadLookBack != 0 || cfg.dayAheadLookAhead != 72*time.Hour ||
-			cfg.actualLoadInterval != 5*time.Minute || cfg.actualLoadLookBack != 720*time.Hour || cfg.actualLoadLookAhead != 2*time.Hour {
+			cfg.actualLoadInterval != 5*time.Minute || cfg.actualLoadLookBack != 720*time.Hour || cfg.actualLoadLookAhead != 2*time.Hour ||
+			len(cfg.dayAheadZones) != 2 || cfg.dayAheadZones[1].EIC != "10YBE----------2" ||
+			len(cfg.actualLoadZones) != 1 || cfg.actualLoadZones[0].Name != "DE_LU" {
 			t.Errorf("got %+v", cfg)
 		}
 	})
@@ -83,6 +105,8 @@ func TestLoadConfig(t *testing.T) {
 		{"zero look-ahead", map[string]string{"INGEST_DAY_AHEAD_LOOK_AHEAD": "0s"}, "INGEST_DAY_AHEAD_LOOK_AHEAD"},
 		{"zero load interval", map[string]string{"INGEST_ACTUAL_LOAD_INTERVAL": "0s"}, "INGEST_ACTUAL_LOAD_INTERVAL"},
 		{"negative load look-back", map[string]string{"INGEST_ACTUAL_LOAD_LOOK_BACK": "-1h"}, "INGEST_ACTUAL_LOAD_LOOK_BACK"},
+		{"unknown price zone", map[string]string{"INGEST_DAY_AHEAD_ZONES": "NL,XX"}, "INGEST_DAY_AHEAD_ZONES"},
+		{"duplicate load zone", map[string]string{"INGEST_ACTUAL_LOAD_ZONES": "NL,NL"}, "INGEST_ACTUAL_LOAD_ZONES"},
 	}
 	for _, tt := range invalid {
 		t.Run(tt.name, func(t *testing.T) {

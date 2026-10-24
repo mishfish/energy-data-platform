@@ -1,6 +1,6 @@
 # 0019: Actual load: realised values only, carried as integer kilowatts
 
-- Status: accepted
+- Status: accepted; the kW scale is superseded by ADR 0029 (watts)
 - Date: 2026-10-15
 
 ## Context

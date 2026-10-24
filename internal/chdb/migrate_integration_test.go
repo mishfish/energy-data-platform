@@ -143,3 +143,26 @@ func TestCDCTablesExist(t *testing.T) {
 		}
 	}
 }
+
+// Price sequences of one slot are different keys and must not collapse into each other (ADR 0029).
+func TestPriceSequencesAreSeparateKeys(t *testing.T) {
+	db := migrated(t)
+	ctx := t.Context()
+	if _, err := db.ExecContext(ctx, `INSERT INTO day_ahead_price
+		(bidding_zone, sequence, delivery_start, resolution_us, price_eur_mwh, source_created_at, lsn, is_deleted) VALUES
+		('10Y1001A1001A82H', 1, '2026-10-22 22:00:00', 900000000, 174.31, '2026-10-22 11:00:00', 10, 0),
+		('10Y1001A1001A82H', 2, '2026-10-22 22:00:00', 900000000, 186.44, '2026-10-22 11:00:00', 11, 0),
+		('10Y1001A1001A82H', 0, '2026-10-22 22:15:00', 900000000, 173.869995, '2026-10-22 11:00:00', 12, 0)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var rows uint64
+	var prices string
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(), arrayStringConcat(groupArray(toString(price_eur_mwh)), ',')
+		FROM (SELECT * FROM day_ahead_price FINAL ORDER BY delivery_start, sequence)`).Scan(&rows, &prices); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows != 3 || prices != "174.31,186.44,173.869995" {
+		t.Errorf("FINAL has %d rows %s, want 3 rows 174.31,186.44,173.869995", rows, prices)
+	}
+}
