@@ -37,6 +37,20 @@ jobs:
         with:
           version: v2.14.0
 
+  # Python dashboard (ADR 0032): ruff and unit tests. The page smoke tests need ClickHouse and skip here.
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: analytics/dashboard/uv.lock
+      - name: Lint and test the dashboard
+        run: make test-dashboard
+        env:
+          UV_FROZEN: "1" # install exactly uv.lock, never re-lock
+
   compose:
     runs-on: ubuntu-latest
     steps:

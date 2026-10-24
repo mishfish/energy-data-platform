@@ -1,0 +1,16 @@
+groups:
+  - name: dashboard
+    rules:
+      # The Streamlit dashboard does not touch the data path, so this is a warning (ADR 0033). The second
+      # half covers a blackbox_exporter that is down itself: then probe_success disappears instead of
+      # turning 0, and only up shows it.
+      - alert: DashboardDown
+        expr: probe_success{job="dashboard"} == 0 or up{job="dashboard"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Streamlit dashboard is not answering"
+          description: >-
+            The health probe of {{ $labels.instance }} has failed for 5 minutes. Ingestion, CDC and the sink
+            are unaffected. Check docker compose ps dashboard, its logs, and blackbox-exporter.

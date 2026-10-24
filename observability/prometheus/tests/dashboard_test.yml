@@ -1,0 +1,61 @@
+# Unit tests for rules/dashboard.yml. Run with: make test-rules
+rule_files:
+  - ../rules/dashboard.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: healthy dashboard does not alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="dashboard", instance="http://dashboard:8501/_stcore/health"}'
+        values: '1x30'
+      - series: 'probe_success{job="dashboard", instance="http://dashboard:8501/_stcore/health"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: DashboardDown
+
+  - name: dashboard stops answering
+    interval: 1m
+    input_series:
+      - series: 'up{job="dashboard", instance="http://dashboard:8501/_stcore/health"}'
+        values: '1x30'
+      - series: 'probe_success{job="dashboard", instance="http://dashboard:8501/_stcore/health"}'
+        values: '1x9 0x20'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: DashboardDown
+      - eval_time: 15m
+        alertname: DashboardDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: dashboard
+              instance: http://dashboard:8501/_stcore/health
+            exp_annotations:
+              summary: "The Streamlit dashboard is not answering"
+              description: >-
+                The health probe of http://dashboard:8501/_stcore/health has failed for 5 minutes. Ingestion, CDC and the sink
+                are unaffected. Check docker compose ps dashboard, its logs, and blackbox-exporter.
+
+  - name: blackbox exporter itself is down
+    interval: 1m
+    input_series:
+      - series: 'up{job="dashboard", instance="http://dashboard:8501/_stcore/health"}'
+        values: '1x9 0x20'
+      - series: 'probe_success{job="dashboard", instance="http://dashboard:8501/_stcore/health"}'
+        values: '1x9 stale'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: DashboardDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: dashboard
+              instance: http://dashboard:8501/_stcore/health
+            exp_annotations:
+              summary: "The Streamlit dashboard is not answering"
+              description: >-
+                The health probe of http://dashboard:8501/_stcore/health has failed for 5 minutes. Ingestion, CDC and the sink
+                are unaffected. Check docker compose ps dashboard, its logs, and blackbox-exporter.

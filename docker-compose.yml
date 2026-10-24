@@ -276,6 +276,13 @@ services:
       clickhouse:
         condition: service_healthy
 
+  # Probes HTTP endpoints that have no /metrics, such as the Streamlit dashboard (ADR 0033).
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.29.1
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./observability/blackbox:/etc/blackbox:ro
+
   # One-shot schema migration (ADR 0013); ingest starts only after it exits 0.
   migrate:
     <<: *ingest-image

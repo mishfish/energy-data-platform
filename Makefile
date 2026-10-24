@@ -21,7 +21,7 @@ test-int: ## Integration tests (testcontainers, needs Docker)
 
 test-rules: ## Prometheus rule unit tests (promtool from the Prometheus image, needs Docker)
 	docker run --rm -v "$(CURDIR)/observability/prometheus:/etc/prometheus:ro" --entrypoint promtool \
-		$(PROMETHEUS_IMAGE) test rules /etc/prometheus/tests/ingest_test.yml /etc/prometheus/tests/cdc_test.yml /etc/prometheus/tests/sink_test.yml
+		$(PROMETHEUS_IMAGE) test rules /etc/prometheus/tests/ingest_test.yml /etc/prometheus/tests/cdc_test.yml /etc/prometheus/tests/sink_test.yml /etc/prometheus/tests/dashboard_test.yml
 
 test-dashboard: ## Dashboard unit tests and ruff; page smoke tests run when ClickHouse is up (make up)
 	cd analytics/dashboard && uv run ruff check . && uv run ruff format --check . && uv run pytest -q
