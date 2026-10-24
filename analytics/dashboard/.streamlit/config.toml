@@ -1,0 +1,16 @@
+# Interactive controls take the first categorical slot, so they never clash with a series color.
+# Separate light and dark sections keep Streamlit following the viewer's system theme.
+[theme.light]
+primaryColor = "#2a78d6"
+
+[theme.dark]
+primaryColor = "#3987e5"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "viewer"

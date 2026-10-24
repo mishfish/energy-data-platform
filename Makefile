@@ -5,7 +5,7 @@ GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$
 # Keep in sync with the prometheus service in docker-compose.yml.
 PROMETHEUS_IMAGE := prom/prometheus:v3.15.0
 
-.PHONY: help build test test-int test-rules lint fmt tidy up up-fake fault fault-clear down down-fake ps logs migrate
+.PHONY: help build test test-dashboard test-int test-rules lint fmt tidy up up-fake fault fault-clear down down-fake ps logs migrate
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -22,6 +22,9 @@ test-int: ## Integration tests (testcontainers, needs Docker)
 test-rules: ## Prometheus rule unit tests (promtool from the Prometheus image, needs Docker)
 	docker run --rm -v "$(CURDIR)/observability/prometheus:/etc/prometheus:ro" --entrypoint promtool \
 		$(PROMETHEUS_IMAGE) test rules /etc/prometheus/tests/ingest_test.yml /etc/prometheus/tests/cdc_test.yml /etc/prometheus/tests/sink_test.yml
+
+test-dashboard: ## Dashboard unit tests and ruff; page smoke tests run when ClickHouse is up (make up)
+	cd analytics/dashboard && uv run ruff check . && uv run ruff format --check . && uv run pytest -q
 
 lint: ## golangci-lint (includes gofmt/goimports checks)
 	$(GOLANGCI_LINT) run ./...

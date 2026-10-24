@@ -8,7 +8,7 @@ A data platform for the European electricity market. A Go service ingests ENTSO-
 
 ```bash
 cp .env.example .env   # fill in API tokens
-make up                # Postgres, Kafka (KRaft), Kafka Connect + Debezium, Apicurio, ClickHouse, ingest, sink, Prometheus, Grafana
+make up                # Postgres, Kafka (KRaft), Kafka Connect + Debezium, Apicurio, ClickHouse, ingest, sink, dashboard, Prometheus, Grafana
 make ps
 make test lint
 ```
@@ -23,6 +23,7 @@ make test lint
 | Apicurio Registry | http://localhost:8085 |
 | ClickHouse | http://localhost:8123 (HTTP), localhost:9000 (native) |
 | sink (health, metrics) | http://localhost:8082/readyz, /metrics |
+| Dashboard (Streamlit) | http://localhost:8501 |
 | Postgres | localhost:5432 |
 | Alertmanager | http://localhost:9093 |
 
