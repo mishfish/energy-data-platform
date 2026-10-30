@@ -4,6 +4,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,7 +39,43 @@ func mustTime(t *testing.T, s string) time.Time {
 	return ts
 }
 
-var noRevisions = model{}
+const (
+	zone60 = "10YTEST-HOURLY-1" // hourly prices with several sequences, hourly load with gaps
+	zoneGB = "10YGB----------A" // no profile: the real platform publishes nothing for GB
+)
+
+// flat is a constant daily shape around v with a small spread.
+func flat(v float64) curve {
+	var c curve
+	for h := range c.Hourly {
+		c.Hourly[h] = v
+	}
+	c.SlotSD, c.DaySD, c.Min, c.Max = v/50, v/20, v/2, 2*v
+	return c
+}
+
+var testProfiles = &profileSet{Zones: map[string]zoneProfile{
+	zoneNL: {
+		Price: &priceProfile{ResolutionMin: 15, curve: flat(80), Sequences: []priceSequence{{Decimals: 2, LastHour: 24}}},
+		Load:  &loadProfile{ResolutionMin: 15, Decimals: 3, LagMin: 60, Weekday: flat(11000), Weekend: flat(9000)},
+		Generation: &genProfile{ResolutionMin: 15, Decimals: 3, LagMin: 60, Series: []genSeriesProfile{
+			{PSRType: "B04", Direction: "generation", curve: flat(3000)},
+			{PSRType: "B10", Direction: "generation", curve: flat(300)},
+			{PSRType: "B10", Direction: "consumption", curve: flat(200)},
+			{PSRType: "B19", Direction: "generation", curve: flat(1500)},
+		}},
+	},
+	zone60: {
+		Price: &priceProfile{ResolutionMin: 60, curve: flat(150), Sequences: []priceSequence{
+			{Position: 0, Decimals: 2, LastHour: 24},
+			{Position: 2, Decimals: 6, LastHour: 24},
+			{Position: 3, Decimals: 2, FirstHour: 12, LastHour: 24, Offset: 5, OffsetSD: 3},
+		}},
+		Load: &loadProfile{ResolutionMin: 60, Decimals: 4, LagMin: 2, MissingRate: 0.25, Weekday: flat(2500), Weekend: flat(2300)},
+	},
+}}
+
+var noRevisions = model{profiles: testProfiles}
 
 // call sends one request and returns its status and headers; the body is drained and closed.
 func call(t *testing.T, method, url, body string) (int, http.Header) {
@@ -129,13 +167,149 @@ func TestGenerationParsesWithTheRealClient(t *testing.T) {
 			t.Errorf("negative quantity %+v", g)
 		}
 	}
-	for _, key := range []string{"B04/generation", "B16/generation", "B19/generation"} {
+	for _, key := range []string{"B04/generation", "B10/generation", "B10/consumption", "B19/generation"} {
 		if slots[key] != 96+52 {
 			t.Errorf("%s: %d slots, want %d (same publication lag as load)", key, slots[key], 96+52)
 		}
 	}
-	if slots["B10/generation"] != slots["B10/consumption"] {
-		t.Errorf("pumped storage has %d generation and %d consumption slots", slots["B10/generation"], slots["B10/consumption"])
+}
+
+// 2026-10-23 and 24 are whole hourly days: sequence 0 and 2 cover them, sequence 3 only 12:00-24:00.
+func TestPriceSequencesFollowTheProfile(t *testing.T) {
+	now := mustTime(t, "2026-10-24T10:00:00Z")
+	client, _ := fakeAt(t, noRevisions, &now)
+	prices, err := client.DayAheadPrices(t.Context(), zone60, mustTime(t, "2026-10-23T00:00:00Z"), mustTime(t, "2026-10-24T00:00:00Z"))
+	if err != nil {
+		t.Fatalf("DayAheadPrices: %v", err)
+	}
+	slots := map[int]int{}
+	var artefacts int
+	for _, p := range prices {
+		slots[p.Sequence]++
+		if p.Resolution != time.Hour {
+			t.Fatalf("resolution %s, want 1h", p.Resolution)
+		}
+		if p.Sequence == 3 {
+			if h := p.DeliveryStart.In(amsterdam).Hour(); h < 12 {
+				t.Errorf("sequence 3 has a price at %d:00, outside its hours", h)
+			}
+		}
+		if p.Sequence == 2 && p.PriceMicros%10_000 != 0 {
+			artefacts++
+		}
+	}
+	if want := map[int]int{0: 48, 2: 48, 3: 24}; !maps.Equal(slots, want) {
+		t.Errorf("slots per sequence %v, want %v", slots, want)
+	}
+	if artefacts < 24 {
+		t.Errorf("only %d of 48 sequence 2 prices carry float32 artefacts", artefacts)
+	}
+}
+
+func TestLoadGapsStayGaps(t *testing.T) {
+	now := mustTime(t, "2026-10-24T14:07:00Z")
+	client, _ := fakeAt(t, noRevisions, &now)
+	start := mustTime(t, "2026-10-17T00:00:00Z")
+	loads, err := client.ActualLoad(t.Context(), zone60, start, mustTime(t, "2026-10-24T00:00:00Z"))
+	if err != nil {
+		t.Fatalf("ActualLoad: %v", err)
+	}
+	// 7 hourly days with a quarter of the hours missing.
+	if len(loads) < 100 || len(loads) > 150 {
+		t.Fatalf("got %d of 168 hourly slots, want about three quarters", len(loads))
+	}
+	seen := map[time.Time]bool{}
+	for _, l := range loads {
+		if l.Resolution != time.Hour || seen[l.DeliveryStart] || l.DeliveryStart.Before(start) {
+			t.Fatalf("unexpected slot %+v", l)
+		}
+		seen[l.DeliveryStart] = true
+	}
+}
+
+func TestZoneWithoutProfileHasNoData(t *testing.T) {
+	now := mustTime(t, "2026-10-24T14:07:00Z")
+	client, _ := fakeAt(t, noRevisions, &now)
+	start, end := mustTime(t, "2026-10-22T00:00:00Z"), mustTime(t, "2026-10-24T00:00:00Z")
+
+	if _, err := client.DayAheadPrices(t.Context(), zoneGB, start, end); !errors.Is(err, entsoe.ErrNoData) {
+		t.Errorf("prices: got %v, want ErrNoData", err)
+	}
+	if _, err := client.ActualLoad(t.Context(), zoneGB, start, end); !errors.Is(err, entsoe.ErrNoData) {
+		t.Errorf("load: got %v, want ErrNoData", err)
+	}
+	if _, err := client.Generation(t.Context(), zoneGB, start, end); !errors.Is(err, entsoe.ErrNoData) {
+		t.Errorf("generation: got %v, want ErrNoData", err)
+	}
+	if _, err := client.Generation(t.Context(), zone60, start, end); !errors.Is(err, entsoe.ErrNoData) {
+		t.Errorf("generation of a zone with prices and load only: got %v, want ErrNoData", err)
+	}
+}
+
+// Every calibrated zone must parse with the real client and stay close to what it was calibrated on.
+func TestEmbeddedProfiles(t *testing.T) {
+	profiles, err := parseProfiles(embeddedProfiles)
+	if err != nil {
+		t.Fatalf("parseProfiles: %v", err)
+	}
+	if len(profiles.Zones) < 40 {
+		t.Fatalf("only %d zones in the embedded profiles", len(profiles.Zones))
+	}
+	m := model{revisionInterval: time.Hour, revisionRate: 0.02, revisionHorizon: 7 * 24 * time.Hour, profiles: profiles}
+	now := mustTime(t, "2026-10-24T14:07:00Z")
+	client, _ := fakeAt(t, m, &now)
+	start, end := mustTime(t, "2026-10-21T00:00:00Z"), mustTime(t, "2026-10-24T00:00:00Z")
+
+	for zone, z := range profiles.Zones {
+		t.Run(zone, func(t *testing.T) {
+			if p := z.Price; p != nil {
+				prices, err := client.DayAheadPrices(t.Context(), zone, start, end)
+				if err != nil {
+					t.Fatalf("DayAheadPrices: %v", err)
+				}
+				lo, hi := widen(p.curve).Min, widen(p.curve).Max
+				for _, s := range p.Sequences {
+					lo = min(lo, lo+s.Offset-5*s.OffsetSD)
+					hi = max(hi, hi+s.Offset+5*s.OffsetSD)
+				}
+				for _, pr := range prices {
+					eur := float64(pr.PriceMicros) / 1e6
+					if pr.Resolution != time.Duration(p.ResolutionMin)*time.Minute || eur < lo-0.06*math.Abs(lo)-1 || eur > hi+0.06*math.Abs(hi)+1 {
+						t.Fatalf("price %+v outside the profile (%d min, %.2f..%.2f)", pr, p.ResolutionMin, lo, hi)
+					}
+				}
+			}
+			if p := z.Load; p != nil {
+				loads, err := client.ActualLoad(t.Context(), zone, start, end)
+				if err != nil {
+					t.Fatalf("ActualLoad: %v", err)
+				}
+				hi := max(widen(p.Weekday).Max, widen(p.Weekend).Max) * 1.04
+				for _, l := range loads {
+					if l.Resolution != time.Duration(p.ResolutionMin)*time.Minute || l.QuantityW < 0 || float64(l.QuantityW)/1e6 > hi {
+						t.Fatalf("load %+v outside the profile (%d min, up to %.0f MW)", l, p.ResolutionMin, hi)
+					}
+				}
+			}
+			if p := z.Generation; p != nil {
+				gen, err := client.Generation(t.Context(), zone, start, end)
+				if err != nil {
+					t.Fatalf("Generation: %v", err)
+				}
+				series := map[string]bool{}
+				for _, g := range gen {
+					series[g.PSRType+"/"+g.Direction] = true
+					if g.QuantityW < 0 {
+						t.Fatalf("negative generation %+v", g)
+					}
+				}
+				for _, s := range p.Series {
+					if !series[s.PSRType+"/"+s.Direction] && s.MissingRate < 0.99 && meanHourly(s.Hourly) > 0 {
+						t.Errorf("series %s/%s missing from the document", s.PSRType, s.Direction)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -153,7 +327,7 @@ func TestNoDataBeforePublication(t *testing.T) {
 }
 
 func TestRevisions(t *testing.T) {
-	m := model{revisionInterval: time.Hour, revisionRate: 0.05, revisionHorizon: 7 * 24 * time.Hour}
+	m := model{revisionInterval: time.Hour, revisionRate: 0.05, revisionHorizon: 7 * 24 * time.Hour, profiles: testProfiles}
 	now := mustTime(t, "2026-10-24T14:07:00Z")
 	client, _ := fakeAt(t, m, &now)
 	start, end := mustTime(t, "2026-10-14T00:00:00Z"), mustTime(t, "2026-10-24T00:00:00Z")

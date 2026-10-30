@@ -5,7 +5,7 @@ GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$
 # Keep in sync with the prometheus service in docker-compose.yml.
 PROMETHEUS_IMAGE := prom/prometheus:v3.15.0
 
-.PHONY: help build test test-dashboard test-int test-rules lint fmt tidy up up-fake fault fault-clear down down-fake ps logs migrate
+.PHONY: help build test test-dashboard test-int test-rules lint fmt tidy up up-fake fake-calibrate fault fault-clear down down-fake ps logs migrate
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -50,6 +50,9 @@ down-fake: ## Stop the synthetic stack (keeps its volumes)
 	$(FAKE_COMPOSE) down
 
 FAKE_ENTSOE_URL ?= http://localhost:$${FAKE_ENTSOE_PORT:-8081}
+
+fake-calibrate: ## Rederive the fake API's zone profiles from real data in the main stack's ClickHouse
+	go run ./cmd/fakeentsoe calibrate
 
 fault: ## Inject a fake API failure: make fault f='{"status":503}' (also delay, retry_after)
 	curl -fsS -X PUT -d '$(f)' $(FAKE_ENTSOE_URL)/admin/fault

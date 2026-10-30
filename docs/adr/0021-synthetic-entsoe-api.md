@@ -1,6 +1,6 @@
 # 0021: Synthetic ENTSO-E API for local runs and failure demos
 
-- Status: accepted
+- Status: accepted; values and document structure superseded by ADR 0034
 - Date: 2026-10-15
 
 ## Context

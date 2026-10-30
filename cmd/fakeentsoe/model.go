@@ -5,17 +5,18 @@ import (
 	"hash/fnv"
 	"math"
 	"math/rand/v2"
+	"strconv"
 	"time"
 	_ "time/tzdata" // the runtime image has no zoneinfo, and delivery days are defined in CET/CEST
 )
 
 const (
-	slotLength = 15 * time.Minute
-	// Realised load of a slot becomes available this long after the slot ends.
-	loadPublicationLag = time.Hour
 	// Day-ahead prices of a delivery day are published at 13:00 local time the day before,
 	// i.e. 11 hours before the delivery day starts.
 	pricePublicationLead = 11 * time.Hour
+	// Revisions move a value by up to this share of it.
+	priceRevisionShare    = 0.05
+	quantityRevisionShare = 0.03
 )
 
 var amsterdam = mustLoadLocation("Europe/Amsterdam")
@@ -28,62 +29,96 @@ func mustLoadLocation(name string) *time.Location {
 	return loc
 }
 
-// model generates deterministic synthetic values. A value depends only on the zone, the slot and the
-// revision epoch that last changed it, so every response agrees on a slot until the slot is revised.
+// model generates deterministic values shaped by the calibrated zone profiles. A value depends only
+// on the zone, the slot and the revision epoch that last changed it, so every response agrees on a
+// slot until the slot is revised.
 type model struct {
 	// Time is split into epochs of this length; in each epoch a published slot younger than
 	// revisionHorizon is revised with probability revisionRate.
 	revisionInterval time.Duration
 	revisionRate     float64
 	revisionHorizon  time.Duration
+	profiles         *profileSet
 }
 
-// priceCents returns the day-ahead price of a slot in EUR cents per MWh as seen at now.
-func (m model) priceCents(zone string, slot, now time.Time) int64 {
-	// A third of the hours trade as one hourly block, which gives the A03 curve something to compress.
-	base := slot
-	if seed("price-block", zone, slot.Truncate(time.Hour), 0).IntN(3) == 0 {
-		base = slot.Truncate(time.Hour)
+func (m model) zone(zone string) zoneProfile {
+	if m.profiles == nil {
+		return zoneProfile{}
 	}
-	r := seed("price", zone, base, 0)
-	h := localHour(base)
-	eur := 75 + 30*bump(h, 8, 2) + 45*bump(h, 19, 2) - 70*bump(h, 13, 2.5) + 16*r.Float64() - 8
-	if wd := base.In(amsterdam).Weekday(); wd == time.Saturday || wd == time.Sunday {
-		eur -= 25 // lower weekend demand pushes midday solar hours below zero
-	}
-	cents := int64(math.Round(eur * 100))
-
-	if rev := m.lastRevision("price", zone, slot, pricePublished(slot), now); rev >= 0 {
-		cents += seed("price-revision", zone, slot, rev).Int64N(3001) - 1500
-	}
-	return cents
+	return m.profiles.Zones[zone]
 }
 
-// loadKW returns the realised total load of a slot in kW as seen at now.
-func (m model) loadKW(zone string, slot, now time.Time) int64 {
-	r := seed("load", zone, slot, 0)
-	h := localHour(slot)
-	mw := 11000 + 3000*bump(h, 9, 3) + 3500*bump(h, 18.5, 2.5) - 1500*bump(h, 3.5, 2.5) + 500*r.Float64() - 250
-	// TSOs publish between zero and three decimals; vary the granularity the same way.
-	granularity := []int64{1000, 1000, 500, 250, 10, 1}[r.IntN(6)]
-	kw := int64(mw*1000) / granularity * granularity
-
-	if rev := m.lastRevision("load", zone, slot, loadPublished(slot), now); rev >= 0 {
-		kw += seed("load-revision", zone, slot, rev).Int64N(800_001) - 400_000
+// price returns the day-ahead price of a slot in EUR/MWh for the i-th sequence of the profile.
+// Prices drop on windy days; the wind regime is largely shared between zones, as weather systems
+// are, which also correlates the prices of neighbouring markets.
+func (m model) price(zone string, p *priceProfile, i int, slot, now time.Time) float64 {
+	day := deliveryDayStart(slot)
+	dayShift := p.DaySD * (-0.8*windRegime(zone, day) + 0.6*normal("price-day", zone, day))
+	v := p.at(slot) + dayShift + p.SlotSD*noise("price", zone, slot, p.Jitter)
+	v = widen(p.curve).clamp(v)
+	if i > 0 {
+		seq := p.Sequences[i]
+		// Auctions for the same day track each other, so the difference drifts hour by hour.
+		v += seq.Offset + seq.OffsetSD*smoothNoise("price-sequence-"+strconv.Itoa(seq.Position), zone, slot)
 	}
-	return max(kw, 0)
+	return m.revise("price", zone, slot, pricePublished(slot), now, v, priceRevisionShare)
+}
+
+// load returns the realised total load of a slot in MW.
+func (m model) load(zone string, p *loadProfile, slot, now time.Time) float64 {
+	c := p.Weekday
+	if wd := slot.In(amsterdam).Weekday(); wd == time.Saturday || wd == time.Sunday {
+		c = p.Weekend
+	}
+	day := deliveryDayStart(slot)
+	v := c.at(slot) + c.DaySD*normal("load-day", zone, day) + c.SlotSD*noise("load", zone, slot, c.Jitter)
+	v = max(widen(c).clamp(v), 0)
+	return m.revise("load", zone, slot, published(slot, p.ResolutionMin, p.LagMin), now, v, quantityRevisionShare)
+}
+
+// generation returns the output (or, for consumption, the intake) of a production type in MW. Day
+// and slot spreads scale with the daily shape, so solar stays at zero at night.
+func (m model) generation(zone string, p *genProfile, s genSeriesProfile, slot, now time.Time) float64 {
+	stream := "generation-" + s.PSRType + "-" + s.Direction
+	day := deliveryDayStart(slot)
+	var dayFactor float64
+	switch s.PSRType {
+	case "B18", "B19": // wind offshore, onshore
+		dayFactor = windRegime(zone, day)
+	default:
+		dayFactor = normal(stream+"-day", zone, day)
+	}
+	base := s.at(slot)
+	avg := meanHourly(s.Hourly)
+	if avg <= 0 || base <= 0 {
+		return 0
+	}
+	scale := base / avg
+	v := base + scale*(s.DaySD*dayFactor+s.SlotSD*noise(stream, zone, slot, s.Jitter))
+	v = max(widen(s.curve).clamp(v), 0)
+	return m.revise(stream, zone, slot, published(slot, p.ResolutionMin, p.LagMin), now, v, quantityRevisionShare)
+}
+
+// revise applies the latest revision of a slot, if any, as a relative change of up to share.
+func (m model) revise(stream, zone string, slot, publishedAt, now time.Time, v, share float64) float64 {
+	rev := m.lastRevision(stream, zone, slot, publishedAt, now)
+	if rev < 0 {
+		return v
+	}
+	delta := (2*seed(stream+"-revision", zone, slot, rev).Float64() - 1) * share * math.Abs(v)
+	return v + delta
 }
 
 // lastRevision returns the latest epoch in which the slot was revised, or -1 if it never was.
 // Only epochs that start after publication and before the slot leaves the revision horizon count.
-func (m model) lastRevision(dataset, zone string, slot, published, now time.Time) int64 {
+func (m model) lastRevision(stream, zone string, slot, publishedAt, now time.Time) int64 {
 	if m.revisionRate <= 0 || m.revisionInterval <= 0 {
 		return -1
 	}
-	first := m.epoch(published) + 1
+	first := m.epoch(publishedAt) + 1
 	last := m.epoch(minTime(now, slot.Add(m.revisionHorizon)))
 	for e := last; e >= first; e-- {
-		if seed(dataset+"-revised", zone, slot, e).Float64() < m.revisionRate {
+		if seed(stream+"-revised", zone, slot, e).Float64() < m.revisionRate {
 			return e
 		}
 	}
@@ -94,12 +129,67 @@ func (m model) epoch(t time.Time) int64 {
 	return t.UnixNano() / int64(m.revisionInterval)
 }
 
+// missing reports whether a slot of a series is never published, which the real platform does for
+// some zones (DK load misses about a quarter of its hours).
+func missing(stream, zone string, slot time.Time, rate float64) bool {
+	return rate > 0 && seed(stream+"-missing", zone, slot, 0).Float64() < rate
+}
+
+// windRegime is a standard normal per zone and delivery day: mostly shared across zones and
+// persistent from one day to the next.
+func windRegime(zone string, day time.Time) float64 {
+	prev := deliveryDayStart(day.Add(-time.Hour))
+	shared := (normal("wind", "", day) + normal("wind", "", prev)) / math.Sqrt2
+	local := (normal("wind", zone, day) + normal("wind", zone, prev)) / math.Sqrt2
+	return 0.8*shared + 0.6*local
+}
+
+// noiseKnots is the spacing of the slow part of the noise: real deviations from the daily shape
+// (weather, outages) last for hours.
+const noiseKnots = 3 * time.Hour
+
+// noise is a standard normal per slot: a share jitter changes from slot to slot, the rest drifts
+// smoothly, so consecutive slots move together as they do on the real platform.
+func noise(stream, zone string, slot time.Time, jitter float64) float64 {
+	jitter = min(max(jitter, 0), 1)
+	return math.Sqrt(1-jitter*jitter)*smoothNoise(stream, zone, slot) + jitter*normal(stream, zone, slot)
+}
+
+// smoothNoise interpolates standard normals drawn every noiseKnots, scaled back to unit variance.
+func smoothNoise(stream, zone string, slot time.Time) float64 {
+	knot := slot.Truncate(noiseKnots)
+	f := float64(slot.Sub(knot)) / float64(noiseKnots)
+	a, b := normal(stream+"-knot", zone, knot), normal(stream+"-knot", zone, knot.Add(noiseKnots))
+	return (a*(1-f) + b*f) / math.Sqrt((1-f)*(1-f)+f*f)
+}
+
+func normal(stream, zone string, t time.Time) float64 {
+	return seed(stream, zone, t, 0).NormFloat64()
+}
+
+// widen loosens the observed range a little, so a short calibration window does not cap every
+// day at the extremes it happened to see.
+func widen(c curve) curve {
+	pad := 0.1 * (c.Max - c.Min)
+	c.Min, c.Max = c.Min-pad, c.Max+pad
+	return c
+}
+
+func meanHourly(h [24]float64) float64 {
+	var s float64
+	for _, v := range h {
+		s += v
+	}
+	return s / 24
+}
+
 func pricePublished(slot time.Time) time.Time {
 	return deliveryDayStart(slot).Add(-pricePublicationLead)
 }
 
-func loadPublished(slot time.Time) time.Time {
-	return slot.Add(slotLength + loadPublicationLag)
+// published returns when a realised slot becomes available: lag minutes after it ends.
+func published(slot time.Time, resMin, lagMin int) time.Time {
+	return slot.Add(time.Duration(resMin+lagMin) * time.Minute)
 }
 
 // deliveryDayStart returns the start of the CET/CEST day that contains t, in UTC.
@@ -119,11 +209,6 @@ func localHour(t time.Time) float64 {
 	return float64(local.Hour()) + float64(local.Minute())/60
 }
 
-// bump is a Gaussian bell with peak 1 at mu, used to shape daily profiles.
-func bump(h, mu, sigma float64) float64 {
-	return math.Exp(-(h - mu) * (h - mu) / (2 * sigma * sigma))
-}
-
 // seed returns a generator that depends only on its arguments.
 func seed(stream, zone string, slot time.Time, epoch int64) *rand.Rand {
 	h := fnv.New64a()
@@ -139,44 +224,4 @@ func minTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
-}
-
-// generationTypes returns the production types a zone reports, a fixed subset per zone. Pumped
-// storage (B10) comes with a consumption series as well, as on the real platform.
-func generationTypes(zone string) []string {
-	r := seed("generation-types", zone, time.Unix(0, 0), 0)
-	types := []string{"B04", "B16", "B19"} // gas, solar, wind onshore everywhere
-	for _, t := range []string{"B01", "B05", "B10", "B11", "B14", "B18", "B20"} {
-		if r.IntN(2) == 0 {
-			types = append(types, t)
-		}
-	}
-	return types
-}
-
-// generationKW returns generation (or, for consumption, pumping) of a production type in kW.
-func (m model) generationKW(zone, psrType, direction string, slot, now time.Time) int64 {
-	stream := "generation-" + psrType + "-" + direction
-	r := seed(stream, zone, slot, 0)
-	h := localHour(slot)
-	var mw float64
-	switch {
-	case psrType == "B16":
-		mw = 4000 * bump(h, 13, 3) * (0.7 + 0.3*r.Float64())
-	case psrType == "B19" || psrType == "B18":
-		mw = 1500 + 1200*seed(stream, zone, slot.Truncate(6*time.Hour), 0).Float64() + 100*r.Float64()
-	case psrType == "B10" && direction == "consumption":
-		mw = 600 * bump(h, 3, 2.5)
-	case psrType == "B10":
-		mw = 700 * bump(h, 19, 2)
-	case psrType == "B14":
-		mw = 2400 + 20*r.Float64()
-	default:
-		mw = 300 + 900*bump(h, 18, 4) + 50*r.Float64()
-	}
-	kw := int64(mw * 1000)
-	if rev := m.lastRevision(stream, zone, slot, loadPublished(slot), now); rev >= 0 {
-		kw += seed(stream+"-revision", zone, slot, rev).Int64N(100_001) - 50_000
-	}
-	return max(kw, 0)
 }

@@ -31,7 +31,7 @@ Grafana dashboards: Ingestion, CDC. Runbooks for failure scenarios are in [`docs
 
 ### Without an ENTSO-E token
 
-`make up-fake` starts the same stack against a synthetic ENTSO-E API (`cmd/fakeentsoe`, ADR 0021). It generates prices and load for any window, publishes them on the real schedule and revises past values over time. The stack runs as a separate compose project with its own volumes, so synthetic data never mixes with real data. Stop one stack before starting the other, because they share host ports.
+`make up-fake` starts the same stack against a synthetic ENTSO-E API (`cmd/fakeentsoe`, ADR 0021). It generates prices, load and generation for any window, with per-zone scale, shape, resolution and quirks calibrated from real data (ADR 0034), publishes them on the real schedule and revises past values over time. The stack runs as a separate compose project with its own volumes, so synthetic data never mixes with real data. Stop one stack before starting the other, because they share host ports.
 
 ```bash
 make up-fake                        # no .env needed
