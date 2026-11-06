@@ -4,6 +4,66 @@ A data platform for the European electricity market. A Go service ingests ENTSO-
 
 > Work in progress. Design decisions are in [`docs/adr/`](docs/adr/).
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph sources["Sources"]
+        entsoe["ENTSO-E API<br/>prices · load · generation"]
+        meteo["Open-Meteo<br/>weather"]
+        fake["fakeentsoe<br/>synthetic API + fault injection"]
+    end
+
+    ingest["ingest (Go)<br/>retries · batch upsert"]
+    pg[("Postgres<br/>source of truth<br/>wal_level=logical")]
+
+    subgraph cdc["CDC"]
+        connect["Kafka Connect<br/>+ Debezium"]
+        registry["Apicurio<br/>schema registry"]
+        kafka{{"Kafka (KRaft)<br/>energy.public.*"}}
+    end
+
+    sink["sink (Go)<br/>commit after write"]
+    ch[("ClickHouse<br/>ReplacingMergeTree(lsn)")]
+    dash["Streamlit<br/>dashboard"]
+
+    subgraph obs["Observability"]
+        prom["Prometheus"] --> am["Alertmanager"]
+        prom --> graf["Grafana"]
+    end
+
+    entsoe --> ingest
+    meteo --> ingest
+    fake -. "make up-fake" .-> ingest
+    ingest --> pg
+    pg -- "logical replication slot" --> connect
+    connect -- Avro --> kafka
+    connect <--> registry
+    kafka --> sink
+    sink <--> registry
+    sink --> ch
+    ch --> dash
+
+    ingest -. metrics .-> prom
+    pg -. postgres_exporter .-> prom
+    sink -. metrics .-> prom
+    dash -. blackbox probe .-> prom
+
+    classDef go fill:#00ADD8,stroke:#007d9c,color:#fff
+    classDef store fill:#1e293b,stroke:#2dd4bf,color:#e2e8f0
+    classDef stream fill:#312e81,stroke:#a78bfa,color:#fff
+    class ingest,sink,fake go
+    class pg,ch store
+    class kafka,connect,registry stream
+```
+
+ENTSO-E revises published values after the fact, so the source produces real `UPDATE`s, not just appends. That is what makes CDC meaningful here:
+
+- **Ingest** upserts each batch into a current-state table. Re-fetching a window is idempotent.
+- **Debezium** reads the Postgres WAL and publishes every change as an Avro event, with the LSN attached.
+- **Sink** writes to ClickHouse first and commits the Kafka offset after. Delivery is at-least-once, and duplicates collapse in `ReplacingMergeTree` by LSN, so `FINAL` matches Postgres ([ADR 0026](docs/adr/0026-at-least-once-with-idempotent-sink.md)).
+- **Observability** covers ingestion freshness, replication slot state and WAL retention, and sink consumer lag. Alert rules are unit-tested with promtool, and the main failure scenarios have runbooks in [`docs/runbooks/`](docs/runbooks/).
+
 ## Quickstart (local)
 
 ```bash
